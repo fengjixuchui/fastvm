@@ -11,7 +11,8 @@ typedef struct jmptable     jmptable;
 typedef struct cpuctx       cpuctx;
 typedef struct funcproto    funcproto;
 typedef struct func_call_specs  func_call_specs;
-typedef map<Address, vector<varnode *>> variable_stack;
+typedef map<Address, vector<varnode *> > variable_stack;
+typedef map<Address, int> version_map;
 typedef struct valuetype    valuetype;
 
 class pcodeemit2 : public PcodeEmit {
@@ -166,6 +167,11 @@ struct varnode {
     bool            is_free() { return !flags.written && !flags.input; }
     /* 实现的简易版本的，判断某条指令是否在某个varnode的活跃范围内 */
     bool            in_liverange(pcodeop *p);
+    /* 判断在某个start-end之间，这个varnode是否live, start, end必须得在同一个block内
+
+    这2个判断liverange的代码都要重新写
+    */
+    bool            in_liverange(pcodeop *start, pcodeop *end);
     bool            is_reg() { return get_addr().getSpace()->getType() == IPTR_PROCESSOR; }
 };
 
@@ -315,6 +321,7 @@ typedef struct blockedge            blockedge;
 #define a_back_edge             0x8
 #define a_loop_edge             0x10
 #define a_true_edge             0x20
+#define a_mark                  0x40
 
 struct blockedge {
     int label;
@@ -362,7 +369,7 @@ struct flowblock {
         unsigned f_entry_point : 1;
         /* 
         1. 在cbranch中被分析为不可达，确认为死 */
-        unsigned f_dead : 1;
+        unsigned f_dead : 1; 
 
         unsigned f_switch_case : 1;
         unsigned f_switch_default : 1;
@@ -382,6 +389,8 @@ struct flowblock {
         unsigned f_call : 1;
         /* 不允许合并 */
         unsigned f_unsplice : 1;
+        /* 内联的时候碰到的cbranch指令 */
+        unsigned f_cond_cbranch : 1;
     } flags = { 0 };
 
     RangeList cover;
@@ -401,6 +410,9 @@ struct flowblock {
     int dfnum = 0;
     int numdesc = 1;        // 在 spaning tree中的后代数量，自己也是自己的后代，所以假如正式计算后代数量，自己起始为1
 
+    int vm_byteindex = -1;      
+    int vm_caseindex = -1;
+
     vector<blockedge>   in;
     vector<blockedge>   out;
     vector<flowblock *> blist;
@@ -419,6 +431,12 @@ struct flowblock {
     flowblock*  get_out(int i) { return out[i].point;  }
     flowblock*  get_in(int i) { return in[i].point;  }
     flowblock*  get_block(int i) { return blist[i]; }
+    flowblock*  get_block_by_index(int index) {
+        for (int i = 0; i < blist.size(); i++)
+            if (blist[i]->index == index) return blist[i];
+
+        return NULL;
+    }
     pcodeop*    first_op(void) { return *ops.begin();  }
     pcodeop*    last_op(void) { return *--ops.end();  }
     int         get_out_rev_index(int i) { return out[i].reverse_index;  }
@@ -433,8 +451,16 @@ struct flowblock {
     void        find_spanning_tree(vector<flowblock *> &preorder, vector<flowblock *> &rootlist);
     void        dump_spanning_tree(const char *filename, vector<flowblock *> &rootlist);
     void        calc_forward_dominator(const vector<flowblock *> &rootlist);
-    void        build_dom_tree(vector<vector<flowblock *>> &child);
+    void        build_dom_tree(vector<vector<flowblock *> > &child);
     int         build_dom_depth(vector<int> &depth);
+    /*
+    寻找一种trace流的反向支配节点，
+
+    一般的反向支配节点算法，就是普通支配节点算法的逆
+
+    而这个算法是去掉，部分节点的回边而生成反向支配节点，用来在trace流中使用
+    */
+    flowblock*  find_post_tdom(flowblock *h);
     bool        find_irrereducible(const vector<flowblock *> &preorder, int &irreduciblecount);
     void        calc_loop();
 
@@ -493,16 +519,27 @@ struct flowblock {
     pcodeop*    first_callop();
     /* 搜索到哪个节点为止 */
     pcodeop*    first_callop_vmp(flowblock *end);
-    bool        in_loop(flowblock *h);
+    /* 这个函数有点问题 */
+    flowblock*  find_loop_exit(flowblock *start, flowblock *end);
     void        mark_unsplice() { flags.f_unsplice = 1;  }
     bool        is_unsplice() { return flags.f_unsplice; }
     bool        is_end() { return out.size() == 0;  }
+    Address     get_return_addr();
+    pcodeop*    get_pcode(int pid) {
+        list<pcodeop *>::iterator it;
+        for (it = ops.begin(); it != ops.end(); it++) {
+            if ((*it)->start.getTime() == pid)
+                return *it;
+        }
+
+        return NULL;
+    }
 };
 
 typedef struct priority_queue   priority_queue;
 
 struct priority_queue {
-    vector<vector<flowblock *>> queue;
+    vector<vector<flowblock *> > queue;
     int curdepth;
 
     priority_queue(void) { curdepth = -2;  }
@@ -643,6 +680,7 @@ struct funcdata {
 
     map<Address,VisitStat> visited;
     dobc *d = NULL;
+    flowblock * vmhead = NULL;
 
     /* vbank------------------------- */
     struct {
@@ -667,16 +705,16 @@ struct funcdata {
     list<func_call_specs *>     qlst;
 
     /* heritage start ................. */
-    vector<vector<flowblock *>> domchild;
-    vector<vector<flowblock *>> augment;
+    vector<vector<flowblock *> > domchild;
+    vector<vector<flowblock *> > augment;
 #define boundary_node       1
 #define mark_node           2
-#define merged_node          4
+#define merged_node         4
+#define visit_node          8
     vector<uint4>   phiflags;   
     vector<int>     domdepth;
     /* dominate frontier */
     vector<flowblock *>     merge;      // 哪些block包含phi节点
-    vector<flowblock *>     mergedj;
     priority_queue pq;
 
     int maxdepth = -1;
@@ -712,7 +750,8 @@ struct funcdata {
 
     vector<Address>     addrlist;
     /* 常量cbranch列表 */
-    vector<pcodeop *>    cbrlist;
+    vector<pcodeop *>       cbrlist;
+    vector<flowblock *>     emptylist;
     pcodeemit2 emitter;
 
     /* 做条件inline时用到 */
@@ -743,10 +782,10 @@ struct funcdata {
     pcodeop*    newop(int inputs, const SeqNum &sq);
     pcodeop*    newop(int inputs, const Address &pc);
     pcodeop*    cloneop(pcodeop *op, const SeqNum &seq);
-    pcodeop*    cloneopv(pcodeop *op);
     void        op_destroy_raw(pcodeop *op);
     void        op_destroy(pcodeop *op);
     void        op_destroy_ssa(pcodeop *op);
+    void        reset_out_use(pcodeop *p);
 
     varnode*    new_varnode_out(int s, const Address &m, pcodeop *op);
     varnode*    new_varnode(int s, AddrSpace *base, uintb off);
@@ -783,6 +822,7 @@ struct funcdata {
     void        op_unlink(pcodeop *op);
     void        op_uninsert(pcodeop *op);
     void        clear_block_phi(flowblock *b);
+    void        clear_block_df_phi(flowblock *b);
 
     pcodeop*    find_op(const Address &addr);
     pcodeop*    find_op(const SeqNum &num) const;
@@ -822,7 +862,7 @@ struct funcdata {
     void        dump_cfg(const string &name, const char *postfix, int flag);
     void        dump_pcode(const char *postfix);
     /* dump dom-joint graph */
-    void        funcdata::dump_djgraph(const char *postfix, int flag);
+    void        dump_djgraph(const char *postfix, int flag);
 
     void        op_insert_before(pcodeop *op, pcodeop *follow);
     void        op_insert_after(pcodeop *op, pcodeop *prev);
@@ -888,12 +928,12 @@ struct funcdata {
     void        build_adt(void);
     void        calc_phi_placement(const vector<varnode *> &write);
     void        calc_phi_placement2(const vector<varnode *> &write);
-    void        visit_dj(const vector<varnode *> &write,  flowblock *v);
-    bool        in_mergedj(flowblock *v);
+    void        calc_phi_placement3(const vector<flowblock *> &write);
+    void        visit_dj(flowblock *cur,  flowblock *v);
     void        visit_incr(flowblock *qnode, flowblock *vnode);
     void        place_multiequal(void);
     void        rename();
-    void        rename_recurse(blockbasic *bl, variable_stack &varstack);
+    void        rename_recurse(blockbasic *bl, variable_stack &varstack, version_map &vermap);
     int         collect(Address addr, int size, vector<varnode *> &read,
         vector<varnode *> &write, vector<varnode *> &input);
     void        heritage(void);
@@ -946,20 +986,41 @@ struct funcdata {
     bool        trace_push(pcodeop *op);
     void        trace_push_op(pcodeop *op);
     void        trace_clear();
-    pcodeop*    trace_load_query(varnode *vn);
     pcodeop*    trace_store_query(varnode *vn);
-    pcodeop*    store_query(pcodeop *load, pcodeop **maystore);
+    /* 查询某个load是来自于哪个store，有2种查询方式，
+    
+    一种是直接指明load，后面的b可以填空，从这个load开始往上搜索
+    一种是不指明load，但是指明b，从这个block开始搜索
+
+    @load       要从这条load开始搜索，pos也来自于这个load
+    @b          要从这个block开始搜搜，pos来自于外部提供
+    @pos        内存位置
+    @maystore   当发现无法判断的store，返回这个store
+    */
+    pcodeop*    store_query(pcodeop *load, flowblock *b, varnode *pos, pcodeop **maystore);
 #define _DUMP_PCODE             0x01
 #define _DUMP_ORIG_CASE         0x02
+    /* 循环展开的假如是 while switch case 里的分支则需要clone，假如不是的话则不需要复制后面的流 */
 #define _DONT_CLONE             0x08
+#define _NOTE_VMBYTEINDEX       0x10 
     bool        loop_unrolling2(flowblock *h, int times, uint32_t flags);
+    bool        loop_unrolling3(flowblock *h, int times, uint32_t flags);
 
-    flowblock*  loop_unrolling(flowblock *h, uint32_t flags);
+    /* 搜索从某个节点开始到某个节点的，所有in节点的集合 */
+    int         collect_blocks_to_node(vector<flowblock *> &blks, flowblock *start, flowblock *end);
+    /*
+    @h          起始节点
+    @enter      循环展开的头位置
+    @end        循环展开的结束位置，不包含end
+    */
+    flowblock*  loop_unrolling(flowblock *h, flowblock *end, uint32_t flags);
     /* 这里的dce加了一个数组参数，用来表示只有当删除的pcode在这个数组里才允许删除
     这个是为了方便调试以及还原
     */
     void        dead_code_elimination(vector<flowblock *> blks);
-    flowblock*  get_vm_loop_header(void);
+    flowblock*  get_vmhead(void);
+    flowblock*  get_vmhead_unroll(void);
+    pcodeop*    get_vmcall(flowblock *b);
 
     bool        use_outside(varnode *vn);
     void        use2undef(varnode *vn);
@@ -968,6 +1029,7 @@ struct funcdata {
     void        block_remove_internal(blockbasic *bb, bool unreachable);
     bool        remove_unreachable_blocks(bool issuewarnning, bool checkexistence);
     void        splice_block_basic(blockbasic *bl);
+    void        remove_empty_block(blockbasic *bl);
 
     void        redundbranch_appy();
     void        dump_store_info(const char *postfix);
@@ -977,15 +1039,25 @@ struct funcdata {
     最后的web包含start，不包含end */
     flowblock*  clone_web(flowblock *start, flowblock *end, vector<flowblock *> &cloneblks);
     flowblock*  clone_ifweb(flowblock *newstart, flowblock *start, flowblock *end, vector<flowblock *> &cloneblks);
-    flowblock*  clone_block(flowblock *f);
+#define F_OMIT_RETURN       1
+    flowblock*  clone_block(flowblock *f, u4 flags);
+    /* 把某个block从某个位置开始切割成2块，
+
+    比如
+
+    1. mov r0, 1
+    2. call xxx
+    3. mov r1, r0
+    我们内联inline了xxx以后，xxx可能是 if .. else 的结构
+    那么我们需要把整个快拆开
+    */
+    flowblock*  split_block(flowblock *f, list<pcodeop *>::iterator it);
 
     char*       get_dir(char *buf);
     int         get_input_sp_val();
 
-    void        alias_analysis(void);
-    void        alias_analysis2(void);
-
     bool        have_side_effect(void) { return funcp.flags.side_effect;  }
+    bool        have_side_effect(pcodeop *op, varnode *pos);
     void        alias_clear(void);
     /* 循环展开时用
     
@@ -1019,6 +1091,22 @@ struct funcdata {
     bool        test_strict_alias(pcodeop *load, pcodeop *store);
     void        remove_dead_store(flowblock *b);
     bool        has_no_use_ex(varnode *vn);
+    /* 打印某个节点的插入为止*/
+    void        dump_phi_placement(int bid, int pid);
+    /* 搜索归纳变量 */
+    varnode*    detect_induct_variable(flowblock *h);
+    bool        can_analysis(flowblock *b);
+
+    /* 
+    
+    把一个 
+    a->h
+    b->h的结构转换成
+    a->c->h
+    b->c->h
+    @return     c
+    */
+    flowblock*  combine_multi_in_before_loop(vector<flowblock *> ins, flowblock *header);
 };
 
 struct func_call_specs {
@@ -1061,6 +1149,7 @@ struct dobc {
     Address     r3_addr;
     Address     lr_addr;
     Address     cy_addr;
+    Address     pc_addr;
 
     dobc(const char *slafilename, const char *filename);
     ~dobc();
