@@ -10,6 +10,8 @@
 
 #define strdup _strdup 
 
+#define NOP             0xe1a00000
+
 #define GEN_SH          "#!/bin/bash\n"  \
     "for filename in `find . -type f -name \"*.dot\" | xargs`\n"  \
     "do\n" \
@@ -19,6 +21,11 @@
 
 #define ENABLE_DUMP_INST                1
 #define ENABLE_DUMP_PCODE               0
+
+#define func_format_s					"%s"
+#define func_format()					""
+#undef print_level
+#define print_level		3
 
 static char help[] = {
     "dobc [.sla filename] [filename]"
@@ -31,7 +38,13 @@ static dobc *g_dobc = NULL;
 #define COLOR_ASM_ADDR                  "#33A2FF"               
 #define COLOR_ASM_STACK_DEPTH           "green"
 
+#if 0
 #define DCFG_COND_INLINE                
+#define DCFG_BEFORE               
+#define DCFG_AFTER               
+#define DCFG_AFTER_PCODE        
+#define DCFG_CASE
+#endif
 
 #define MSB4(a)                 (a & 0x80000000)
 #define MSB2(a)                 (a & 0x8000)
@@ -293,20 +306,20 @@ struct pltentry {
     int side_effect;
     u4 flags;
 } pltlist[] = {
-    { "__stack_chk_fail",   0x1a34, 0, 0, 1, 0 },
-    { "time",               0x1adc, 1, 1, 0, 0 },
-    { "lrand48",            0x1ad0, 0, 1, 0, 0 },
-    { "srand48",            0x1ac4, 0, 0, 0, 0 },
-    { "memcpy",             0x1ab8, 3, 1, 0, 1 },
-    { "dec_str",            0x7dfc, 2, 1, 0, 1 },
-    { "anti1",              0x1d68, 2, 1, 0, 0 },
-    { "anti2",              0x2000, 2, 1, 0, 0 },
-    { "vmp360_op1",         0x67ac, 3, 0, 0, 1 },
-    { "vmp360_mathop",      0x6248, 3, 0, 0, 1 },
-    { "vmp360_op3",         0x66ac, 3, 0, 0, 1 },
-    { "vmp360_op4",         0x61c0, 3, 0, 0, 1 },
-    { "vmp360_op5",         0x6204, 3, 0, 0, 1 },
-    { "vmp360_cbranch",        0x68cc, 3, 0, 0, 1 },
+    { "__stack_chk_fail",   0x1a34, 4, 0, 1, 0 },
+    { "time",               0x1adc, 4, 1, 0, 0 },
+    { "lrand48",            0x1ad0, 4, 1, 0, 0 },
+    { "srand48",            0x1ac4, 4, 0, 0, 0 },
+    { "memcpy",             0x1ab8, 4, 1, 0, 1 },
+    { "dec_str",            0x7dfc, 4, 1, 0, 1 },
+    { "anti1",              0x1d68, 4, 1, 0, 0 },
+    { "anti2",              0x2000, 4, 1, 0, 0 },
+    { "vmp360_op1",         0x67ac, 4, 0, 0, 1 },
+    { "vmp360_mathop",      0x6248, 4, 0, 0, 1 },
+    { "vmp360_op3",         0x66ac, 4, 0, 0, 1 },
+    { "vmp360_op4",         0x61c0, 4, 0, 0, 1 },
+    { "vmp360_op5",         0x6204, 4, 0, 0, 1 },
+    { "vmp360_cbranch",        0x68cc, 4, 0, 0, 1 },
 };
 
 void dobc::init_plt()
@@ -354,9 +367,11 @@ funcdata* test_vmp360_cond_inline(dobc *d, intb addr)
 
 void dobc::plugin_dvmp360()
 {
-    int changed;
-
     funcdata *fd_main = find_func("_Z10__arm_a_21v");
+    //funcdata *fd_main = find_func("_Z9__arm_a_1P7_JavaVMP7_JNIEnvPvRi");
+    //funcdata *fd_main = find_func("_Z9__arm_a_2PcjS_Rii");
+    //funcdata *fd_main = find_func("_ZN10DynCryptor9__arm_c_0Ev");
+    //funcdata *fd_main = find_func("_ZN9__arm_c_19__arm_c_0Ev");
     fd_main->set_alias("vm_func1");
 
     set_func_alias("_Z9__arm_a_0v", "vm_enter");
@@ -364,78 +379,15 @@ void dobc::plugin_dvmp360()
 
     set_test_cond_inline_fn(test_vmp360_cond_inline);
 
-    fd_main->set_safezone_base(STACKBASE);
-    fd_main->set_safezone(-0x148, 4);
-
-    fd_main->follow_flow();
-
-    fd_main->inline_call("", 1);
-    fd_main->inline_call("", 1);
-
-#if 1
-    changed = 1;
-    fd_main->heritage();
-    fd_main->dump_cfg(fd_main->name, "orig", 1);
-    while (changed) {
-        changed = 0;
-
-        fd_main->constant_propagation2();
-
-        // 发现CBRANCH列表不为空，说明有条件判断语句为常量
-        if (!fd_main->cbrlist.empty()) {
-            fd_main->cond_constant_propagation();
-            /* 发生了条件常量传播以后，整个程序的结构发生了变化，整个结构必须得重来 */
-            changed = 1;
-        }
-
-        // 发现新地址
-        if (!fd_main->addrlist.empty()) {
-            fd_main->generate_ops();
-            fd_main->generate_blocks();
-            changed = 1;
-        }
-    }
-#endif
-
-
-#if 1
-    char buf[16];
-    int i;
-
-    // 56
-    for (i = 1; i <= 56; i++) {
-        printf("loop unrolling %d times*************************************\n", i);
-        fd_main->loop_unrolling2(fd_main->get_vmhead(), i, _NOTE_VMBYTEINDEX);
-        fd_main->dead_code_elimination(fd_main->bblocks.blist);
-        fd_main->dump_cfg(fd_main->name, _itoa(i, buf, 10), 1);
-    }
-#endif
-
-    printf("loop unrolling %d times*************************************\n", i);
-    fd_main->loop_unrolling3(fd_main->get_vmhead(), i, _NOTE_VMBYTEINDEX);
-    fd_main->dead_code_elimination(fd_main->bblocks.blist);
-    fd_main->dump_cfg(fd_main->name, _itoa(i, buf, 10), 1);
-
-    for (i++; i <= 61; i++) {
-        printf("loop unrolling %d times*************************************\n", i);
-        fd_main->loop_unrolling2(fd_main->get_vmhead(), i, _NOTE_VMBYTEINDEX);
-        fd_main->dead_code_elimination(fd_main->bblocks.blist);
-        fd_main->dump_cfg(fd_main->name, _itoa(i, buf, 10), 1);
-    }
-
-    fd_main->dump_cfg(fd_main->name, "final", 1);
-    fd_main->dump_pcode("1");
-    fd_main->dump_djgraph("1", 1);
-    //fd_main->dump_phi_placement(17, 5300);
-    fd_main->dump_store_info("1");
+    fd_main->vmp360_deshell();
 }
 
-void    dobc::vmp360_dump(pcodeop *p)
+void    funcdata::vmp360_marker(pcodeop *p)
 {
     if (p->opcode == CPUI_LOAD) {
         varnode *in1 = p->get_in(1);
 
-        if ((in1->type.height == a_rel_constant) && (in1->get_val() == -0x1bc)) {
+        if ((in1->type.height == a_rel_constant) && (in1->get_val() == vmeip)) {
             p->flags.vm_eip = 1;
         }
     }
@@ -444,7 +396,7 @@ void    dobc::vmp360_dump(pcodeop *p)
         varnode *in2 = p->get_in(2);
 
         /* 加入跟新 VMEIP 指针的值不是常量直接报错 */
-        if ((in1->type.height == a_rel_constant) && (in1->get_val() == -0x1bc)) {
+        if ((in1->type.height == a_rel_constant) && (in1->get_val() == vmeip)) {
             p->flags.vm_eip = 1;
             if (!p->flags.vm_vis && (in2->type.height == a_constant)) {
                 //printf("addr = %llx, p%d, store VMEIP = %lld\n", p->get_dis_addr().getOffset(), p->start.getTime(), in2->get_val());
@@ -478,10 +430,31 @@ funcdata* dobc::find_func(const char *name)
     return NULL;
 }
 
+void dobc::init_regs()
+{
+    map<VarnodeData, string> reglist;
+    map<VarnodeData, string>::iterator it;
+
+    trans->getAllRegisters(reglist);
+
+    for (it = reglist.begin(); it != reglist.end(); it++) {
+        string &name = it->second;
+        if (name.find("tmp") != string::npos) continue;
+        if (name.find("multi") != string::npos) continue;
+        cpu_regs.insert(it->first.getAddr());
+
+		/* 参考ARM.sinc, lr的地址是0x58 */
+		if (it->first.getAddr().getOffset() < 0x58)
+			cpu_base_regs.insert(it->first.getAddr());
+
+    }
+}
+
 void dobc::init()
 {
     LoadImageFunc sym;
 
+    init_regs();
     init_abbrev();
     init_plt();
 
@@ -539,6 +512,11 @@ dobc::dobc(const char *sla, const char *bin)
     r3_addr = trans->getRegister("r3").getAddr();
     cy_addr = trans->getRegister("CY").getAddr();
     pc_addr = trans->getRegister("pc").getAddr();
+
+    argument_regs.push_back(&r0_addr);
+    argument_regs.push_back(&r1_addr);
+    argument_regs.push_back(&r2_addr);
+    argument_regs.push_back(&r3_addr);
 
     init();
 }
@@ -657,22 +635,6 @@ void            varnode::set_def(pcodeop *op)
         flags.written = 0;
 }
 
-bool            funcdata::has_no_use_ex(varnode *vn)
-{
-    if (vn->has_no_use()) {
-        pcodeop *op = vn->def;
-        if (op) {
-            pcodeop_def_set::iterator it1 = topname.find(op);
-            if ((it1 != topname.end()) && (*it1 == op))
-                return false;
-        }
-
-        return true;
-    }
-
-    return false;
-}
-
 void        funcdata::dump_phi_placement(int bid, int pid)
 {
     flowblock *b = bblocks.get_block_by_index(bid);
@@ -692,23 +654,27 @@ void        funcdata::dump_phi_placement(int bid, int pid)
     printf("\n");
 }
 
-varnode*    funcdata::detect_induct_variable(flowblock *h)
+varnode*    funcdata::detect_induct_variable(flowblock *h, flowblock * &exit)
 {
     list<pcodeop *>::const_reverse_iterator it;
+    flowblock *true1;
 
-    if (h->last_op()->opcode != CPUI_CBRANCH) {
-        throw LowlevelError("detect induct variable flowblock need cbranch");
-    }
+    if (NULL == (exit = bblocks.detect_whiledo_exit(h))) 
+        throw LowlevelError("h:%d whiledo loop not found exit node");
+
+    true1 = h->get_true_edge()->point;
 
     for (it = h->ops.rbegin(); it != h->ops.rend(); it++) {
         pcodeop *p = *it;
 
+        /* 这个地方有点硬编码了，直接扫描sub指令，这个是因为当前的测试用例中的核心VM，用了cmp指令以后
+        生成了sub，这个地方可能更好的方式是匹配更复杂的pattern */
         if (p->opcode == CPUI_INT_SUB) {
             varnode *in0 = p->get_in(0);
             varnode *in1 = p->get_in(1);
 
-            // FIXME:针对vm engine的这种情况，我不清楚该如何正确的识别出归纳变量，直接返回第2个了，后面想想更好的办法
-            return  in1;
+            /* 假如前面是cmp指令，而且节点节点等于真值出口，那么我们认为in1是归纳变量 */
+            return  (exit == true1) ? in1:in0;
         }
     }
 
@@ -739,6 +705,8 @@ void            varnode::del_use(pcodeop *op)
 
 bool            varnode::in_liverange(pcodeop *p)
 {
+	return in_liverange_simple(p);
+
     if (!def) return false;
 
     if ((p->output->get_addr() == get_addr()) && (p->output->version - 1) == version) return true;
@@ -760,6 +728,22 @@ bool            varnode::in_liverange(pcodeop *p)
     return true;
 }
 
+bool			varnode::in_liverange_simple(pcodeop *p)
+{
+	int v = p->parent->fd->reset_version;
+
+	if (v != simple_cover.version) return false;
+	if (p->parent->index != simple_cover.blk_index) return false;
+
+	int o = p->start.getOrder();
+	if ((o >= simple_cover.start) && (simple_cover.start > -1)) {
+		if ((o <= simple_cover.end) || (simple_cover.end == -1))
+			return true;
+	}
+
+	return false;
+}
+
 bool        varnode::in_liverange(pcodeop *start, pcodeop *end)
 {
     if (start->parent != end->parent)
@@ -775,6 +759,46 @@ bool        varnode::in_liverange(pcodeop *start, pcodeop *end)
     }
 
     return true;
+}
+
+void			varnode::add_def_point_simple()
+{
+	simple_cover.version = def->parent->fd->reset_version;
+	simple_cover.blk_index = def->parent->index;
+	simple_cover.start = def->start.getOrder() + 1;
+	simple_cover.end = -1;
+}
+
+void			varnode::add_ref_point_simple(pcodeop *p)
+{
+	short v = p->parent->fd->reset_version;
+
+	if (simple_cover.version != v) {
+		if (is_input()) {
+			simple_cover.blk_index = 0;
+			simple_cover.version = v;
+			simple_cover.start = 0;
+			simple_cover.end = p->start.getOrder();
+		}
+		else
+			throw LowlevelError("un-input varnode version mismatch");
+	}
+	else {
+		/* 假如不是同一个块，则返回 */
+		if (p->parent->index != simple_cover.blk_index)
+			return;
+
+		/* 假如是同一个块，则设置为终点 */
+		simple_cover.end = p->start.getOrder();
+	}
+}
+
+void			varnode::clear_cover_simple()
+{
+	simple_cover.version = -1;
+	simple_cover.blk_index = -1;
+	simple_cover.start = -1;
+	simple_cover.end = -1;
 }
 
 intb            varnode::get_val(void)
@@ -837,6 +861,19 @@ inline bool pcodeop_cmp_def::operator()(const pcodeop *a, const pcodeop *b) cons
     //return a->output->get_addr() < b->output->get_addr();
 }
 
+inline bool pcodeop_cmp::operator()(const pcodeop *a, const pcodeop *b) const
+{
+    return a->start.getTime() < b->start.getTime();
+    //return a->output->get_addr() < b->output->get_addr();
+}
+
+inline bool pcodeop_domdepth_cmp::operator()(const pcodeop *a, const pcodeop *b) const
+{
+	funcdata *fd = a->parent->fd;
+
+	return fd->domdepth[a->parent->index] < fd->domdepth[b->parent->index];
+}
+
 inline bool varnode_cmp_gvn::operator()(const varnode *a, const varnode *b) const
 {
     pcodeop *op1, *op2;
@@ -867,6 +904,120 @@ inline bool varnode_cmp_gvn::operator()(const varnode *a, const varnode *b) cons
     }
 
     return false;
+}
+
+void coverblock::set_begin(pcodeop *op) 
+{
+	start = op->start.getOrder();
+}
+
+void coverblock::set_end(pcodeop *op) 
+{
+	end = op->start.getOrder();
+}
+
+void coverblock::set_end(int e)
+{
+	end = e;
+}
+
+bool coverblock::contain(pcodeop *op)
+{
+	uintm p = op->start.getOrder();
+
+	if (empty())
+		return false;
+
+	return (p <= end) && (p >= start);
+}
+
+int coverblock::dump(char *buf)
+{
+	if (end == -1)
+		return sprintf(buf, "{ver:%d,ind:%d,%d-max}", version, blk_index, start);
+	else
+		return sprintf(buf, "{ver:%d,ind:%d,%d-%d}", version, blk_index, start, end);
+}
+
+void cover::add_def_point(varnode *vn)
+{
+	pcodeop *def;
+
+	c.clear();
+
+	def = vn->get_def();
+	if (def) {
+		coverblock &block(c[def->parent->index]);
+		block.set_begin(def);
+		block.set_end(def);
+	}
+	else {
+		throw LowlevelError("not support input varnode");
+	}
+}
+
+void cover::add_ref_point(pcodeop *ref, varnode *vn, int exclude)
+{
+	int i;
+	flowblock *bl;
+
+	bl = ref->parent;
+	coverblock &block(c[bl->index]);
+	if (block.empty()) {
+		uintm last = ref->start.getOrder();
+		if (exclude) {
+			if ((last - 1) >= 0)
+				block.set_end(last - 1);
+		}
+		else
+			block.set_end(ref);
+	}
+	else if (block.contain(ref)){
+		return;
+	}
+	else {
+		block.set_end(ref);
+		if (block.end >= block.start) {
+			return;
+		}
+	}
+
+	for (i = 0; i < bl->in.size(); i++)
+		add_ref_recurse(bl->get_in(i));
+}
+
+void cover::add_ref_recurse(flowblock *bl)
+{
+	int i;
+
+	coverblock &block(c[bl->index]);
+	if (block.empty()) {
+		block.set_all();
+		for (i = 0; i < bl->in.size(); i++)
+			add_ref_recurse(bl->get_in(i));
+	}
+	else {
+		if (block.end >= block.start)
+			block.set_end(INT_MAX);
+	}
+}
+
+int cover::dump(char *buf)
+{
+	int n = 0;
+	map<int, coverblock>::iterator it;
+
+	n += sprintf(buf + n, "[");
+	for (it = c.begin(); it != c.end(); it++) {
+		coverblock &c(it->second);
+		if (c.end == INT_MAX)
+			n += sprintf(buf + n, "{blk:%d, %d-max}", it->first, c.start);
+		else
+			n += sprintf(buf + n, "{blk:%d, %d-%d}", it->first, c.start, c.end);
+	}
+	n += sprintf(buf + n, "]");
+
+	return n;
 }
 
 pcodeop::pcodeop(int s, const SeqNum &sq)
@@ -918,9 +1069,10 @@ void    pcodeop::insert_input(int slot)
 int             pcodeop::dump(char *buf, uint32_t flags)
 {
     int i = 0, j, in_limit = 10000;
+    dobc *d = parent->fd->d;
     Translate *trans = parent->fd->d->trans;
 
-    i += sprintf(buf + i, "    p%d:", start.getTime());
+    i += sprintf(buf + i, " p%-3d [%3d]:", start.getTime(), start.getOrder());
 
     if (output) {
         i += print_varnode(trans, buf + i, output);
@@ -955,7 +1107,7 @@ int             pcodeop::dump(char *buf, uint32_t flags)
     if (flags & PCODE_DUMP_UD)
         i += print_udchain(buf + i, this, flags);
 
-    if (is_call() && callctx) {
+    if (is_call()) {
         if (flags & PCODE_HTML_COLOR)   i += sprintf(buf + i, "<font color=\"red\"> ");
 #if 0
         i += sprintf(buf + i, "[r0:");
@@ -972,7 +1124,7 @@ int             pcodeop::dump(char *buf, uint32_t flags)
 #endif
 
         i += sprintf(buf + i, "[sp:");
-        i += print_vartype(trans, buf + i, callctx->sp);
+        i += print_vartype(trans, buf + i, get_in(d->sp_addr));
         i += sprintf(buf + i, "]");
         if (flags & PCODE_HTML_COLOR)   i += sprintf(buf + i, " </font>");
     }
@@ -986,12 +1138,111 @@ int             pcodeop::dump(char *buf, uint32_t flags)
     return i;
 }
 
+bool            pcodeop::in_sp_alloc_range(varnode *pos)
+{
+    if (opcode != CPUI_INT_SUB)  return false;
+
+    Address &sp = parent->fd->d->sp_addr;
+
+    varnode *in0 = get_in(0);
+    varnode *in1 = get_in(1);
+
+    if (output && output->is_rel_constant()
+        && in0->is_rel_constant()
+        && in1->is_constant()
+        && pos->is_rel_constant()
+        && (-pos->get_val() > -in0->get_val()) 
+        && (-pos->get_val() <= -output->get_val())) {
+        return true;
+    }
+
+    return false;
+}
+
 void            pcodeop::peephole(void)
 {
     switch (opcode) {
     case CPUI_COPY:
         break;
     }
+}
+
+int				pcodeop::compute_add_sub()
+{
+	varnode *in0, *in1, *_in0, *_in1, *out;
+	pcodeop *op;
+	funcdata *fd = parent->fd;
+
+	in0 = get_in(0);
+	in1 = get_in(1);
+	out = output;
+
+	op = in0->def;
+
+	if (!is_trace() && op && ((op->opcode == CPUI_INT_ADD) || (op->opcode == CPUI_INT_SUB))) {
+		_in0 = op->get_in(0);
+		_in1 = op->get_in(1);
+
+		/*
+		ma = ma + 4;
+		x = ma + 4;
+
+		转换成
+		x = ma + 8;
+
+		关于活跃范围判断有2种情况
+
+		1. r0 = r1 + 4
+		2. r1 = r4 + 4
+		3. sp = r0 + 4
+
+		假如你想优化 sp = r1 + 4，需要判断 指令3 是不是在r1的活动范围内
+
+		1. ma = ma + 4
+		2. sp = ma + 4
+
+		当前r0, r1位置的寄存器相等时，需要判断ma的范围
+		*/
+		while (
+			_in0->is_rel_constant()
+			&& (in0->uses.size() == 1) && _in1->is_constant() 
+			&& ((op->output->get_addr() == _in0->get_addr()) || _in0->in_liverange_simple(this))) {
+			intb v = in1->get_val();
+
+			if (opcode == CPUI_INT_ADD) {
+				if (op->opcode == CPUI_INT_ADD)
+					v = _in1->get_val() + v;
+				else
+					v = -_in1->get_val() + v;
+			}
+			else {
+				if (op->opcode == CPUI_INT_ADD)
+					v = -_in1->get_val() + v;
+				else
+					v = _in1->get_val() + v;
+			}
+
+			while (num_input() > 0)
+				fd->op_remove_input(this, 0);
+
+			fd->op_set_input(this, in0 = _in0, 0);
+			fd->op_set_input(this, in1 = fd->create_constant_vn(v, in1->size), 1);
+			fd->op_destroy(op);
+
+			op = _in0->def;
+			if ((op->opcode != CPUI_INT_ADD) && (op->opcode != CPUI_INT_SUB))
+				break;
+			_in0 = op->get_in(0);
+			_in1 = op->get_in(1);
+		}
+	}
+
+	if (opcode == CPUI_INT_ADD)
+		out->set_rel_constant(in0->get_rel(), in0->type.v + in1->type.v);
+	else
+		out->set_rel_constant(in0->get_rel(), in0->type.v - in1->type.v);
+
+	return 0;
 }
 
 int             pcodeop::compute(int inslot, flowblock **branch)
@@ -1066,11 +1317,11 @@ int             pcodeop::compute(int inslot, flowblock **branch)
         //      out                            in0              in1            
         // 66:(register,r1,4) = LOAD (const,0x11ed0f68,8) (const,0x840c,4)
     case CPUI_LOAD:
-        d->vmp360_dump(this);
+        fd->vmp360_marker(this);
 
         in1 = get_in(1);
         in2 = (inrefs.size() == 3) ? get_in(2):NULL;
-        if (fd->is_code(in0) && in1->is_constant()) {
+        if (fd->is_code(in0, in1) && in1->is_constant()) {
             Address addr(d->trans->getDefaultCodeSpace(), in1->type.v);
 
             memset(buf, 0, sizeof(buf));
@@ -1100,7 +1351,17 @@ int             pcodeop::compute(int inslot, flowblock **branch)
             修改第2条指令会 cpy r0(1), r0(0)
             */
 #if 1
-            if (!is_trace() && (_in2->get_addr() == out->get_addr()) && (_in2->version + 1) == (out->version)) {
+            if (!is_trace() && 
+				(((_in2->get_addr() == out->get_addr()) && (_in2->version + 1) == (out->version))
+					|| _in2->in_liverange_simple(this))) {
+                while (num_input())
+                    fd->op_remove_input(this, 0);
+
+                fd->op_set_opcode(this, CPUI_COPY);
+                fd->op_set_input(this, _in2, 0);
+            }
+#else
+            if (!is_trace() && _in2->in_liverange_simple(this)) {
                 while (num_input())
                     fd->op_remove_input(this, 0);
 
@@ -1110,14 +1371,20 @@ int             pcodeop::compute(int inslot, flowblock **branch)
 #endif
         }
         else if ((inslot >= 0)) { // trace流中
-            if (store = fd->trace_store_query(in1)) {
-                out->type = store->get_in(2)->type;
+            pcodeop *maystoer = NULL;
+            if ((store = fd->trace_store_query(this))) {
+                if (store->opcode == CPUI_INT_SUB)
+                    out->set_val(0);
+                else
+                    out->type = store->get_in(2)->type;
             }
-            else
+            else {
+                /* 这里有点问题，实际上可能是a_bottom */
                 out->type.height = a_top;
+            }
         }
         /* 假如这个值确认来自于外部，不要跟新他 */
-        else if (!flags.input)
+        else if (!flags.input && !flags.val_from_sp_alloc)
             out->type.height = a_top;
 
         if (out->is_constant()) {
@@ -1147,7 +1414,7 @@ int             pcodeop::compute(int inslot, flowblock **branch)
 
         //
     case CPUI_STORE:
-        d->vmp360_dump(this);
+        fd->vmp360_marker(this);
 
         in1 = get_in(1);
         in2 = get_in(2);
@@ -1318,45 +1585,7 @@ int             pcodeop::compute(int inslot, flowblock **branch)
                 out->set_val(in0->type.v + in1->type.v);
         }
         else if (fd->is_sp_rel_constant(in0) && in1->is_constant()) {
-            op = in0->def;
-
-            if (!is_trace() && op && ((op->opcode == CPUI_INT_ADD) || (op->opcode == CPUI_INT_SUB))) {
-                _in0 = op->get_in(0);
-                _in1 = op->get_in(1);
-
-                /*
-                ma = ma + 4;
-                x = ma + 4;
-
-                转换成
-                x = ma + 8;
-                */
-#if 1
-                while ((in0->uses.size() == 1) && _in1->is_constant()) {
-                    intb v = in1->get_val();
-
-                    if (op->opcode == CPUI_INT_ADD)
-                        v += _in1->get_val();
-                    else
-                        v -= _in1->get_val();
-
-                    while (num_input() > 0)
-                        fd->op_remove_input(this, 0);
-
-                    fd->op_set_input(this, in0 = _in0, 0);
-                    fd->op_set_input(this, in1 = fd->create_constant_vn(v, in1->size), 1);
-                    fd->op_destroy(op);
-
-                    op = _in0->def;
-                    if ((op->opcode != CPUI_INT_ADD) && (op->opcode != CPUI_INT_SUB))
-                        break;
-                    _in0 = op->get_in(0);
-                    _in1 = op->get_in(1);
-                }
-#endif
-            }
-
-            out->set_rel_constant(in0->get_rel(), in0->type.v + in1->type.v);
+			compute_add_sub();
         }
         else if (in0->is_constant() && fd->is_sp_rel_constant(in1)) {
             out->set_rel_constant(in1->get_rel(), in0->type.v + in1->type.v);
@@ -1381,7 +1610,8 @@ int             pcodeop::compute(int inslot, flowblock **branch)
         /*      out                             0                   1       */
         /* 0:(register,mult_addr,4) = INT_SUB (register,sp,4) (const,0x4,4) */
         else if (fd->is_sp_rel_constant(in0) && in1->is_constant()) {
-            out->set_rel_constant(in0->get_rel(), in0->type.v - in1->type.v);
+			compute_add_sub();
+            //out->set_rel_constant(in0->get_rel(), in0->type.v - in1->type.v);
         }
         else
             out->type.height = a_top;
@@ -1563,6 +1793,7 @@ int             pcodeop::compute(int inslot, flowblock **branch)
                 && in0->def && in0->def->opcode == CPUI_MULTIEQUAL
                 && (_in1 = in0->def->get_in(1))
                 && _in1->is_constant() && (in1->get_val() == _in1->get_val())
+                && in1->def
                 && (in1->def->parent->in.size() == 1) 
                 && (b = in1->def->parent->get_in(0))
                 && (b->last_op()->opcode == CPUI_CBRANCH)
@@ -1607,41 +1838,58 @@ int             pcodeop::compute(int inslot, flowblock **branch)
     if ((this == parent->last_op()) && (parent->out.size() == 1))
         *branch = parent->get_out(0);
 
-    if (!is_trace() && output && output->is_constant() && (opcode != CPUI_COPY) && (opcode != CPUI_STORE)) {
-        if (opcode == CPUI_LOAD) flags.copy_from_load = 1;
-        if (opcode == CPUI_MULTIEQUAL) flags.copy_from_phi = 1;
-        while (num_input() > 0) {
-            fd->op_remove_input(this, 0);
-        }
+    /*
+    非trace条件才能开启常量持久化
+    */
+    if (!is_trace()) {
+        /* 
+        1. 当有output节点，且output节点为常量时，运行进行常量持久化 
+        2. opcode不能为copy，因为常量持久化就是把常量节点，改成copy操作 
+        3. opcode不能为store，因为store有副作用，它的use也不是特别好计算 */
+        if (output && output->is_constant() && (opcode != CPUI_COPY) && (opcode != CPUI_STORE)) {
+            /* phi节点转成 copy指令时，需要记录下这个copy节点来自于phi节点，在删除phi节点时，假如有需要可以删除这个copy  */
+            if (opcode == CPUI_MULTIEQUAL) flags.copy_from_phi = 1;
+            while (num_input() > 0) 
+                fd->op_remove_input(this, 0);
 
-        fd->op_set_opcode(this, CPUI_COPY);
-        fd->op_set_input(this, fd->create_constant_vn(out->get_val(), out->size), 0);
+            fd->op_set_opcode(this, CPUI_COPY);
+            fd->op_set_input(this, fd->create_constant_vn(out->get_val(), out->size), 0);
+        }
+        /* 
+        1. phi节点的in节点不能这么处理
+        2. call节点不能常量持久化in， */
+        else if ((opcode != CPUI_MULTIEQUAL) && !is_call()) {
+            for (i = 0; i < inrefs.size(); i++) {
+                vn = get_in(i);
+
+				/* 后面那个判断条件是防止冲入的*/
+                if (vn->is_constant()) {
+					if (!vn->in_constant_space()) {
+						fd->op_unset_input(this, i);
+						fd->op_set_input(this, fd->create_constant_vn(vn->get_val(), vn->size), i);
+					}
+                }
+                /* 这里重点说下in的非constant转换规则 
+
+                output = op(in0, in1, ..., inN) 
+                上面的指令中，
+                1. 假如某个inN的def是一个copy的操作
+                2. 拷贝来自于另外一个cpu寄存器(rN)
+                3. 当前的pcode在那个rN的活跃范围内
+                我们直接修改上面的指令为 
+                output = op(in0, in1, ..., rN)
+                */
+                else if ((op = vn->def) && (op->opcode == CPUI_COPY) && op->get_in(0)->in_liverange_simple(this)) {
+					fd->op_unset_input(this, i);
+					fd->op_set_input(this, op->get_in(0), i);
+                }
+            }
+        }
     }
 
     /* 计算sp */
 
     return ret;
-}
-
-bool            pcodeop::is_safe_inst()
-{
-    funcdata *fd = parent->fd;
-
-    VisitStat &stat(fd->visited[start.getAddr()]);
-
-    return stat.inst_type == a_stmdb;
-}
-
-bool            pcodeop::is_prev_op(pcodeop *p) 
-{
-    list<pcodeop *>::iterator it = basiciter;
-
-    if ((parent->ops.begin() != basiciter) && ((*it)->parent == p->parent)) {
-        --it;
-        return (*it) == this;
-    }
-
-    return false;
 }
 
 void            pcodeop::to_constant(void)
@@ -1653,6 +1901,22 @@ void            pcodeop::to_constant(void)
 
     fd->op_set_opcode(this, CPUI_COPY);
     fd->op_set_input(this, fd->create_constant_vn(output->get_val(), output->size), 0);
+}
+
+void            pcodeop::to_rel_constant()
+{
+    funcdata *fd = parent->fd;
+    if (opcode != CPUI_MULTIEQUAL)
+        throw LowlevelError("to_rel_constant() only support MULTIEQUAL");
+
+    varnode *in0 = get_in(0);
+
+    while (num_input() > 1)
+        fd->op_remove_input(this, 1);
+
+    fd->op_set_opcode(this, CPUI_INT_ADD);
+    intb sub = output->get_val() - in0->get_val();
+    fd->op_set_input(this, fd->create_constant_vn(sub, output->size), 1);
 }
 
 void            pcodeop::to_copy(varnode *in)
@@ -1723,6 +1987,14 @@ void    jmptable::update(funcdata *fd)
     op = fd->find_op(opaddr);
 }
 
+rangenode::rangenode()
+{
+}
+
+rangenode::~rangenode()
+{
+}
+
 void blockgraph::add_block(blockbasic *b)
 {
     int min = b->index;
@@ -1752,6 +2024,8 @@ void flowblock::find_spanning_tree(vector<flowblock *> &preorder, vector<flowblo
     rpostorder.resize(blist.size());
     visitcount = (int *)calloc(1, sizeof(int) * blist.size());
 
+    exitlist.clear();
+    clear_loopinfo();
     for (i = 0; i < blist.size(); i++) {
         tmpbl = blist[i];
         tmpbl->index = -1;
@@ -1759,6 +2033,11 @@ void flowblock::find_spanning_tree(vector<flowblock *> &preorder, vector<flowblo
         tmpbl->copymap = tmpbl;
         if ((tmpbl->in.size() == 0))
             rootlist.push_back(tmpbl);
+
+        if (!tmpbl->out.size())
+            exitlist.push_back(tmpbl);
+
+        tmpbl->clear_loopinfo();
     }
     assert(rootlist.size() == 1);
 
@@ -1830,7 +2109,7 @@ void flowblock::structure_loops(vector<flowblock *> &rootlist)
 
     find_spanning_tree(preorder, rootlist);
     /* vm360的图是不可规约的，还不确认不可规约的图会对优化造成什么影响 */
-    find_irrereducible(preorder, irreduciblecount);
+    find_irreducible(preorder, irreduciblecount);
 }
 
 void flowblock::dump_spanning_tree(const char *filename, vector<flowblock *> &rootlist)
@@ -2011,6 +2290,34 @@ int         flowblock::get_out_index(const flowblock *bl)
     return -1;
 }
 
+void        flowblock::calc_exitpath()
+{
+    flowblock *e, *in;
+    int i, j;
+    vector<flowblock *> q;
+
+    for (i = 0; i < exitlist.size(); i++) {
+        e = exitlist[i];
+
+        e->flags.f_exitpath = 1;
+
+        q.clear();
+        q.push_back(e);
+
+        while ((in = q.front())) {
+            q.erase(q.begin());
+            if (in->get_back_edge_count() > 0)
+                continue;
+
+            in->flags.f_exitpath = 1;
+
+            for (j = 0; j < in->in.size(); j++) {
+                q.push_back(in->get_in(j));
+            }
+        }
+    }
+}
+
 void        flowblock::clear(void)
 {
     vector<flowblock *>::iterator iter;
@@ -2052,10 +2359,6 @@ void        flowblock::add_edge(flowblock *begin, flowblock *end, int label)
 
 void        flowblock::add_in_edge(flowblock *b, int lab)
 {
-    if (fd->vmhead && (flags.f_entry_point || b->flags.f_entry_point)) {
-        printf("aaaaaaaa\n");
-    }
-
     int outrev = b->out.size();
     int brev = in.size();
     in.push_back(blockedge(b, lab, outrev));
@@ -2119,6 +2422,17 @@ int         flowblock::get_back_edge_count(void)
     }
 
     return count;
+}
+
+flowblock*  flowblock::get_back_edge_node(void)
+{
+    int i, count = 0;
+
+    for (i = 0; i < in.size(); i++) {
+        if (in[i].label & a_back_edge) return in[i].point;
+    }
+
+    return NULL;
 }
 
 blockedge* flowblock::get_true_edge(void)
@@ -2388,6 +2702,31 @@ flowblock*  flowblock::find_loop_exit(flowblock *start, flowblock *end)
     return NULL;
 }
 
+flowblock*          flowblock::detect_whiledo_exit(flowblock *header)
+{
+    flowblock *true0, *false0, *back;
+
+    if (header->out.size() != 2)
+        return NULL;
+
+    if (header->get_back_edge_count() == 0)
+        return NULL;
+
+    back = header->get_back_edge_node();
+
+    true0 = header->get_true_edge()->point;
+    false0 = header->get_false_edge()->point;
+
+    while (back) {
+        if (back == true0) return false0;
+        if (back == false0) return true0;
+
+        back = back->immed_dom;
+    }
+
+    throw LowlevelError("loop is unreducible ?");
+}
+
 flowblock*        funcdata::combine_multi_in_before_loop(vector<flowblock *> ins, flowblock *header)
 {
     int i;
@@ -2411,6 +2750,266 @@ flowblock*        funcdata::combine_multi_in_before_loop(vector<flowblock *> ins
     return b;
 }
 
+void        funcdata::dump_exe()
+{
+    /* 删除所有splice 模块，不会导致ssa关系重构 */
+    bblocks.clear_all_unsplice();
+    bblocks.clear_all_vminfo();
+
+    redundbranch_apply();
+    remove_dead_stores();
+
+	heritage_clear();
+	heritage();
+    dead_code_elimination(bblocks.blist, 0);
+	build_liverange();
+	dump_liverange("1");
+}
+
+void        funcdata::detect_calced_loops(vector<flowblock *> &loops)
+{
+    int i;
+    flowblock *lheader;
+
+    for (i = 0; i < bblocks.loopheaders.size(); i++) {
+        lheader = bblocks.loopheaders[i];
+
+        /* FIXME:硬编码了一波， */
+        if ((lheader->loopnodes.size() == 2) && (lheader->dfnum < 10)) 
+            loops.push_back(lheader);
+    }
+}
+
+void        funcdata::remove_loop_livein_varnode(flowblock *lheader)
+{
+    int i;
+    flowblock *o;
+    list<pcodeop *>::iterator it, next;
+    list<pcodeop *>::iterator itu;
+    pcodeop *p, *p_use;
+    varnode *out;
+
+    /* 遍历循环内所有节点 */
+    for (i = 0; i < lheader->loopnodes.size(); i++) {
+        o = lheader->loopnodes[i];
+
+        for (it = o->ops.begin(); it != o->ops.end(); it = next) {
+            p = *it;
+			next = ++it;
+
+            if (!(out = p->output)) continue;
+
+            /* 查看循环内的varnode 是否有被循环歪的节点使用到，假如是的话，则把这个节点加入到outlist中去*/
+            for (itu = out->uses.begin(); itu != out->uses.end(); itu++) {
+                p_use = *itu;
+                if (!bblocks.in_loop(lheader, p_use->parent)) break;
+            }
+
+            if (itu == out->uses.end()) 
+                op_destroy_ssa(p);
+        }
+    }
+}
+
+void        funcdata::remove_calculated_loop(flowblock *lheader)
+{
+    vector<varnode *> outlist;
+
+    if (lheader->loopnodes.size() != 2)
+        throw LowlevelError("now only support 2 nodes constant loop remove");
+
+    flowblock *pre = loop_pre_get(lheader, 0);
+    flowblock *cur = lheader, *branch;
+    pcodeop *p;
+    list<pcodeop *>::iterator it;
+    varnode *vn;
+
+    do {
+        int inslot = cur->get_inslot(pre), ret;
+        branch = NULL;
+
+        /* 因为这个计算可计算循环，不需要把节点重新拉出来，所以不加入trace列表 */
+        for (it = cur->ops.begin(); it != cur->ops.end(); it++) {
+            p = *it;
+
+            p->set_trace();
+            ret = p->compute(inslot, &branch);
+
+            if ((vn = p->output) && (vn->type.height == a_top)) {
+                /* FIXME: 我这里根据某些特殊情况对load做了特殊处理，让a_top类型的load值变成了
+                0xbadbeef */
+                if (p->opcode == CPUI_LOAD)
+                    vn->set_val(0xbadbeef);
+                else if (!vn->uses.empty())
+                    throw LowlevelError("in calculated loop find unkown node");
+            }
+
+#if 0
+            char buf[256];
+            p->dump(buf, PCODE_DUMP_SIMPLE & ~PCODE_HTML_COLOR);
+            printf("%s\n", buf);
+#endif
+        }
+
+        pre = cur;
+        cur = branch;
+    } while (bblocks.in_loop(lheader, cur));
+
+    remove_loop_livein_varnode(lheader);
+
+    /* FIXME:以下的合并节点的方式不对，我简化处理了 */
+    branch = lheader->loopnodes[1];
+    if (!branch->ops.empty())
+        throw LowlevelError("not support liveout ops live in loopsnode");
+
+    bblocks.remove_edge(branch, lheader);
+    bblocks.remove_edge(lheader, branch);
+    bblocks.remove_block(branch);
+    if ((lheader->out.size() == 1) && ((p = lheader->last_op())->opcode == CPUI_CBRANCH)) {
+        op_destroy(p, 1);
+    }
+
+    for (it = lheader->ops.begin(); it != lheader->ops.end(); it++) {
+        p = *it;
+        p->clear_trace();
+        vn = p->output;
+        if (!vn) continue;
+        if (vn->is_constant()) p->to_constant();
+        if (vn->is_rel_constant()) p->to_rel_constant();
+    }
+
+    structure_reset();
+}
+
+void        funcdata::remove_calculated_loops()
+{
+    vector<flowblock *> loops;
+    int i;
+
+    detect_calced_loops(loops);
+
+    for (i = 0; i < loops.size(); i++) {
+        remove_calculated_loop(loops[i]);
+    }
+
+    heritage_clear();
+    heritage();
+}
+
+bool        funcdata::vmp360_detect_vmeip()
+{
+    flowblock *vmhead = get_vmhead(), *exit = NULL;
+    varnode *iv = detect_induct_variable(vmhead, exit), *pos;
+    pcodeop *op, *def;
+    char buf[128];
+
+    if (!iv)
+        throw LowlevelError("vmp360 not found VMEIP");
+
+    op = vmhead->find_pcode_def(iv->get_addr());
+
+    /**/
+    for (int i = 0; i < op->inrefs.size(); i++) {
+        /* 检测到归纳变量以后(也就是vmeip)，扫描它从哪个边进来的，假如不是来自于回边，直接退出 */
+        if (!(vmhead->in[i].label & a_back_edge)) continue;
+
+        def = op->get_in(i)->def;
+        if (def->opcode != CPUI_LOAD) continue;
+        pos = def->get_in(1);
+        if (pos->type.height == a_rel_constant) {
+            print_varnode(d->trans, buf, pos);
+
+            printf("****found VMEIP [%s]\n", buf);
+            vmeip = pos->get_val();
+            return true;
+        }
+    }
+
+    return false;
+}
+
+int         funcdata::vmp360_detect_safezone()
+{
+    if (vmeip == -1)
+        throw LowlevelError("vmp360_detect_safezone need vmeip detect");
+
+    /* FIXME:硬编码一波 
+
+    */
+
+    set_safezone(vmeip - 0x24, 0xa0);
+
+    return 0;
+}
+
+int         funcdata::vmp360_detect_framework_info()
+{
+    if (!vmp360_detect_vmeip())
+        throw LowlevelError("vmp360_detect_vmeip not found vmeip");
+
+    if (vmp360_detect_safezone())
+        throw LowlevelError("vmp360_detect_safezone() failure ");
+
+    return 0;
+}
+
+int        funcdata::vmp360_deshell()
+{
+	unsigned int tick = mtime_tick();
+
+    follow_flow();
+
+    inline_call("", 1);
+    inline_call("", 1);
+
+    /* 这里需要heritage一次，才能扫描到 vmp360的框架信息，
+    而没有这一次vmp360的框架信息扫描，它们后面的 heritage也是不完全的，所以在检测完360的框架以后
+    需要再来一次heritage*/
+    heritage();
+    if (vmp360_detect_framework_info())
+        throw LowlevelError("vmp360_deshell not found vmeip");
+
+	heritage_clear();
+    heritage();
+
+    if (!cbrlist.empty())
+        cond_constant_propagation();
+
+    remove_calculated_loops();
+    if (!cbrlist.empty())
+        cond_constant_propagation();
+
+	flags.enable_topstore_mark = 1;
+    dump_cfg(name, "orig1", 1);
+
+    char buf[16];
+    int i;
+    for (i = 0; get_vmhead(); i++) {
+    //for (i = 0; i < 3; i++) {
+        printf("loop unrolling %d times*************************************\n", i);
+        loop_unrolling4(get_vmhead(), i, _NOTE_VMBYTEINDEX);
+        dead_code_elimination(bblocks.blist, RDS_UNROLL0);
+#if defined(DCFG_CASE)
+        dump_cfg(name, _itoa(i, buf, 10), 1);
+#endif
+    }
+
+    dump_cfg(name, "final0", 1);
+
+    dump_exe();
+
+    dump_cfg(name, "final", 1);
+    dump_pcode("1");
+    dump_djgraph("1", 1);
+    //fd_main->dump_phi_placement(17, 5300);
+    dump_store_info("1");
+    dump_loop("1");
+
+	printf("deshell spent %u ms\n", mtime_tick() - tick);
+
+    return 0;
+}
+
 Address    flowblock::get_return_addr()
 {
     pcodeop *p = last_op();
@@ -2423,6 +3022,45 @@ Address    flowblock::get_return_addr()
         throw LowlevelError("inline block last op output must be pc address");
 
     return Address(d->get_code_space(), p->output->get_val());
+}
+
+void        flowblock::clear_all_unsplice()
+{
+    for (int i = 0; i < blist.size(); i++) {
+        get_block(i)->flags.f_unsplice = 0;
+    }
+}
+
+void        flowblock::clear_all_vminfo()
+{
+    for (int i = 0; i < blist.size(); i++) {
+        flowblock *b = get_block(i);
+        b->vm_byteindex = -1;
+        b->vm_caseindex = -1;
+    }
+}
+
+bool        flowblock::in_loop(flowblock *lheader, flowblock *node)
+{
+    return (node->loopheader == lheader) || (node == lheader);
+}
+
+pcodeop*    flowblock::find_pcode_def(const Address &outaddr)
+{
+    list<pcodeop *>::iterator it;
+    pcodeop *p;
+
+    for (it = ops.begin(); it != ops.end(); it++) {
+        p = *it;
+        if (p->output && p->output->get_addr() == outaddr)
+            return p;
+    }
+
+    return NULL;
+}
+
+void        funcdata::remove_dead_store2(flowblock *b, map<valuetype, vector<pcodeop *> > &m)
+{
 }
 
 void        funcdata::remove_dead_store(flowblock *b)
@@ -2453,7 +3091,7 @@ void        funcdata::remove_dead_store(flowblock *b)
                 if (back->output && !back->output->has_no_use()) {
                     assert(0);
                 }
-                op_destroy(back);
+                op_destroy(back, 1);
             }
 
             stack.push_back(p);
@@ -2461,6 +3099,15 @@ void        funcdata::remove_dead_store(flowblock *b)
 
 
         b = ((b->out.size() == 1) && (b->get_out(0)->in.size() == 1)) ? b->get_out(0) : NULL;
+    }
+}
+
+void        funcdata::remove_dead_stores()
+{
+    int i;
+
+    for (i = 0; i < bblocks.get_size(); i++) {
+        remove_dead_store(bblocks.get_block(i));
     }
 }
 
@@ -2520,28 +3167,35 @@ Address     flowblock::get_start(void)
 /* 
 Testing Flow Graph Reducibility
 https://core.ac.uk/download/pdf/82032035.pdf */
-bool        flowblock::find_irrereducible(const vector<flowblock *> &preorder, int &irreduciblecount)
+bool        flowblock::find_irreducible(const vector<flowblock *> &preorder, int &irreduciblecount)
 {
     vector<flowblock *> reachunder;
+    flowblock *y;
     bool needrebuild = false;
-    int xi = preorder.size() - 1, i;
+    int xi = preorder.size() - 1, i, loop, q;
 
     while (xi >= 0) {
         flowblock *x = preorder[xi];
         xi -= 1;
         int sizein = x->in.size();
-        for (i = 0; i < sizein; ++i) {
+        for (i = loop = 0; i < sizein; ++i) {
             if (!x->is_back_edge_in(i))
                 continue;
 
-            flowblock *y = x->get_in(i);
+            loop++;
+
+            y = x->get_in(i);
             if (y == x)
                 continue;
 
             reachunder.push_back(y->copymap);
             y->copymap->set_mark();
         }
-        int q = 0;
+        if (loop) {
+            add_loopheader(x);
+        }
+
+        q = 0;
         while (q < reachunder.size()) {
             flowblock *t = reachunder[q];
             q += 1;
@@ -2551,10 +3205,13 @@ bool        flowblock::find_irrereducible(const vector<flowblock *> &preorder, i
                 flowblock *y = t->get_in(i);
                 flowblock *yprime = y->copymap;         // y' = FIND(y)
 
+                /* 
+                1. 
+                2. cross edge
+                */
                 if ((x->dfnum > yprime->dfnum) || ((x->dfnum + x->numdesc) <= yprime->dfnum)) {
                     printf("warn: dfnum[%d] irreducible to dfnum[%d]\n", x->dfnum, yprime->dfnum);
-                    clear_marks();
-                    return true;
+                    x->irreducibles.push_back(yprime);
                 }
                 else if (!yprime->is_mark() && (yprime != x)) {
                     reachunder.push_back(yprime);
@@ -2567,10 +3224,18 @@ bool        flowblock::find_irrereducible(const vector<flowblock *> &preorder, i
             flowblock *s = reachunder[i];
             s->clear_mark();
             s->copymap = x;
+
+            s->loopheader = x;
+            x->loopnodes.push_back(s);
         }
 
         reachunder.clear();
     }
+
+    clear_marks();
+
+    for (i = 0; i < preorder.size(); i++)
+        preorder[i]->copymap = NULL;
 
     return false;
 }
@@ -2828,13 +3493,29 @@ void        funcdata::op_uninsert(pcodeop *op)
 void        funcdata::clear_block_phi(flowblock *b)
 {
     pcodeop *p;
-    list<pcodeop *>::iterator it;
+    list<pcodeop *>::iterator it, next;
 
+#if 0
     while ((p = b->ops.front())) {
         if ((p->opcode != CPUI_MULTIEQUAL) && !p->flags.copy_from_phi) break;
 
         op_destroy_ssa(p);
     }
+#else
+    for (it = b->ops.begin(); it != b->ops.end(); it = next) {
+        p = *it;
+        next = ++it;
+
+        if (p->opcode == CPUI_MULTIEQUAL) {
+            op_destroy_ssa(p);
+            continue;
+        }
+
+        if (p->flags.copy_from_phi) continue;
+
+        break;
+    }
+#endif
 }
 
 void        funcdata::clear_block_df_phi(flowblock *b)
@@ -3118,41 +3799,32 @@ void        funcdata::del_remaining_ops(list<pcodeop *>::const_iterator oiter)
 
 void        funcdata::add_callspec(pcodeop *p, funcdata *fd)
 {
+    Address *addr;
     varnode *vn;
-    int sug_input;
     p->callfd = fd;
     qlst.push_back(new func_call_specs(p, fd));
 
-    sug_input = (fd->funcp.inputs == -1) ? 3 : fd->funcp.inputs;
-
-    // call的地址也在参数0
-    sug_input += 1;
-
-    while (p->num_input() < sug_input) {
-        if (p->num_input() < 2) {
-            vn = new_varnode(4, d->r0_addr);
-            op_set_input(p, vn, 1);
-        }
-        else if (p->num_input() < 3) {
-            vn = new_varnode(4, d->r1_addr);
-            op_set_input(p, vn, 2);
-        }
-        else if (p->num_input() < 4) {
-            vn = new_varnode(4, d->r2_addr);
-            op_set_input(p, vn, 3);
-        }
-        else if (p->num_input() < 5) {
-            vn = new_varnode(4, d->r3_addr);
-            op_set_input(p, vn, 4);
+    for (int i = 0; i < d->argument_regs.size(); i++) {
+        addr = d->argument_regs[i];
+        if (!p->get_in(*addr)) {
+            vn = new_varnode(4, *addr);
+            op_set_input(p, vn, p->inrefs.size());
         }
     }
 
-    vn = new_varnode(4, d->lr_addr);
-    op_set_input(p, vn, p->inrefs.size());
+    if (!p->get_in(d->lr_addr)) {
+        vn = new_varnode(4, d->lr_addr);
+        op_set_input(p, vn, p->inrefs.size());
+    }
 
-    if ((fd->funcp.output) && !p->output) {
+    if (!p->get_in(d->sp_addr)) {
+        vn = new_varnode(4, d->sp_addr);
+        op_set_input(p, vn, p->inrefs.size());
+    }
+
+    /* 我们认为函数一定会修改 r0 的值，不管它有无返回 */
+    if (!p->output) {
         varnode *vn = new_varnode(4, d->r0_addr);
-
         op_set_output(p, vn);
     }
 }
@@ -3244,6 +3916,7 @@ branch指令打上call_branch标记
         break;
 
         case CPUI_CALLIND:
+			add_callspec(op, NULL);
             break;
         }
 
@@ -3953,7 +4626,9 @@ char*       funcdata::block_color(flowblock *b)
     if (b->flags.f_entry_point)     return "red";
 
     /* 出口节点 */
-    if (b->out.empty())     return "blue";
+    if (b->out.empty())             return "blue";
+    if (b->irreducibles.size())     return "deeppink";
+    if (b->flags.f_loopheader)      return "green";
 
     return "white";
 }
@@ -3992,6 +4667,70 @@ void        funcdata::dump_cfg(const string &name, const char *postfix, int dump
     }
 
     fprintf(fp, "}");
+
+    fclose(fp);
+}
+
+void        funcdata::dump_loop(const char *postfix)
+{
+    char obuf[512];
+
+    sprintf(obuf, "%s/loop_%s.dot", get_dir(obuf), postfix);
+
+    FILE *fp = fopen(obuf, "w");
+    if (NULL == fp) {
+        printf("fopen failure %s", obuf);
+        exit(0);
+    }
+
+    fprintf(fp, "digraph G {\n");
+    fprintf(fp, "node [fontname = \"helvetica\"]\n");
+
+    int i;
+    for (i = 0; i < bblocks.blist.size(); ++i) {
+        blockbasic *b = bblocks.blist[i];
+
+        dump_block(fp, b, 0);
+    }
+
+    blockbasic *loop_header;
+    for (i = 0; i < bblocks.blist.size(); ++i) {
+        blockbasic *b = bblocks.blist[i];
+        loop_header = b->loopheader ? b->loopheader : bblocks.get_block(0);
+
+        /* loopnodes 有包括自己的头节点，需要省略掉 */
+        if (b->loopheader && (b->loopheader != b)) 
+            fprintf(fp, "loc_%x ->loc_%x [label = \"%s\"]\n",
+                b->sub_id(), loop_header->sub_id(), "");
+    }
+
+    fprintf(fp, "}");
+
+    fclose(fp);
+}
+
+void        funcdata::dump_liverange(const char *postfix)
+{
+    char obuf[8192];
+
+    sprintf(obuf, "%s/liverange_%s.txt", get_dir(obuf), postfix);
+
+    FILE *fp = fopen(obuf, "w");
+    if (NULL == fp) {
+        printf("fopen failure %s", obuf);
+        exit(0);
+    }
+
+	list<pcodeop *>::iterator it = deadlist.begin();
+
+	for (; it != deadlist.end(); it++) {
+		pcodeop *p = *it;
+		if (p->is_dead() || !p->output) continue;
+
+		p->output->dump_cover(obuf);
+
+		fprintf(fp, "p%d %s\n", p->start.getTime(), obuf);
+	}
 
     fclose(fp);
 }
@@ -4074,7 +4813,8 @@ varnode*    funcdata::set_input_varnode(varnode *vn)
     varnode *v1;
     if (vn->flags.input) return vn;
 
-    if (caller && (v1 = callop->callctx->get_vn(vn->get_addr()))) {
+    /* 假如发现有调用者，尝试从调用者中获取参数值，当执行 argument_inline 时需要 */
+    if (caller && (v1 = callop->get_in(vn->get_addr()))) {
         vn->type = v1->type;
     }
     else if (vn->get_addr() == d->sp_addr) {
@@ -4095,6 +4835,7 @@ pcodeop*    funcdata::cloneop(pcodeop *op, const SeqNum &seq)
 
     newop1->flags.startinst = op->flags.startinst;
     newop1->flags.startblock = op->flags.startblock;
+	newop1->flags.uncalculated_store = op->flags.uncalculated_store;
     /* 我们有时候会给store分配一个虚拟的varnode节点，不要拷贝它 */
     if (op->output && (op->opcode != CPUI_STORE))
         op_set_output(newop1, clone_varnode(op->output));
@@ -4112,13 +4853,16 @@ void        funcdata::op_destroy_raw(pcodeop *op)
 {
     int i;
 
-    for (i = 0; i < op->inrefs.size(); i++)
-        destroy_varnode(op->inrefs[i]);
+	for (i = 0; i < op->inrefs.size(); i++) {
+		if (op->get_in(i))
+			destroy_varnode(op->get_in(i));
+	}
     if (op->output)
         destroy_varnode(op->output);
 
     optree.erase(op->start);
     deadlist.erase(op->insertiter);
+	remove_from_codelist(op);
 }
 
 void        funcdata::op_destroy(pcodeop *op)
@@ -4126,8 +4870,11 @@ void        funcdata::op_destroy(pcodeop *op)
     int i;
     flowblock *p;
 
-    if (op->output)
+
+	if (op->output) {
         destroy_varnode(op->output);
+		op->output = NULL;
+	}
 
     for (i = 0; i < op->num_input(); ++i) {
         varnode *vn = op->get_in(i);
@@ -4142,6 +4889,13 @@ void        funcdata::op_destroy(pcodeop *op)
         if (p->ops.empty()) 
             emptylist.push_back(op->parent);
     }
+}
+
+void		funcdata::op_destroy(pcodeop *op, int remove)
+{
+	op_destroy(op);
+	if (remove)
+		op_destroy_raw(op);
 }
 
 void        funcdata::reset_out_use(pcodeop *p)
@@ -4169,7 +4923,21 @@ void        funcdata::reset_out_use(pcodeop *p)
 void        funcdata::op_destroy_ssa(pcodeop *p)
 {
     reset_out_use(p);
-    op_destroy(p);
+    op_destroy(p, 1);
+}
+
+void		funcdata::remove_all_dead_op()
+{
+	list<pcodeop *>::iterator it, next;
+	pcodeop *p;
+
+	for (it = deadlist.begin(); it != deadlist.end(); it = next) {
+		p = *it;
+		next = ++it;
+		if (!p->flags.dead) continue;
+
+		op_destroy_raw(p);
+	}
 }
 
 void        funcdata::inline_clone(funcdata *inlinefd, const Address &retaddr)
@@ -4319,7 +5087,7 @@ void        funcdata::inline_flow(funcdata *fd1, pcodeop *callop)
     generate_blocks();
 }
 
-flowblock*      funcdata::cond_inline(funcdata *inlinefd, pcodeop *callop)
+flowblock*      funcdata::argument_inline(funcdata *inlinefd, pcodeop *callop)
 {
     funcdata fd(inlinefd->name.c_str(), inlinefd->get_addr(), 0, d);
     flowblock *pblk = callop->parent;
@@ -4340,13 +5108,14 @@ flowblock*      funcdata::cond_inline(funcdata *inlinefd, pcodeop *callop)
     fd.generate_blocks();
     fd.heritage();
 
+
 #if defined(DCFG_COND_INLINE)
     char buf[32];
     sprintf(buf, "cond_before");
     fd.dump_cfg(fd.name, buf, 1);
 #endif
 
-    fd.cond_pass();
+    fd.argument_pass();
 
 #if defined(DCFG_COND_INLINE)
     sprintf(buf, "cond_after");
@@ -4357,18 +5126,20 @@ flowblock*      funcdata::cond_inline(funcdata *inlinefd, pcodeop *callop)
     list<pcodeop *>::iterator it = b->ops.begin();
 
     /* 把condline后的首blk的头节点都复制到 callop的后面*/
-    for (; it != b->ops.end(); it++) {
-        pcodeop *p = *it;
-        pcodeop *op;
+	if (fd.bblocks.get_size() < 5) {
+		for (; it != b->ops.end(); it++) {
+			pcodeop *p = *it;
+			pcodeop *op;
 
-        if (p->opcode == CPUI_RETURN) break;
+			if (p->opcode == CPUI_RETURN) break;
 
-        Address addr2(d->get_code_space(), user_offset + p->get_addr().getOffset());
-        SeqNum seq(addr2, op_uniqid++);
-        op = cloneop(p, seq);
+			Address addr2(d->get_code_space(), user_offset + p->get_addr().getOffset());
+			SeqNum seq(addr2, op_uniqid++);
+			op = cloneop(p, seq);
 
-        op_insert(op, callop->parent, callop->basiciter);
-    }
+			op_insert(op, callop->parent, callop->basiciter);
+		}
+	}
 
     if (fd.bblocks.get_size() == 3) {
         flowblock *orig_true_b = b->get_true_edge()->point;
@@ -4410,9 +5181,10 @@ flowblock*      funcdata::cond_inline(funcdata *inlinefd, pcodeop *callop)
 
         true_b->flags.f_cond_cbranch = 1;
         false_b->flags.f_cond_cbranch = 1;
-
-        structure_reset();
     }
+	else if (fd.bblocks.get_size() == 5) {
+		inline_call(callop, &fd);
+	}
     else if (fd.bblocks.get_size() != 1) {
         throw LowlevelError("only support one or three block inline" );
     }
@@ -4420,7 +5192,8 @@ flowblock*      funcdata::cond_inline(funcdata *inlinefd, pcodeop *callop)
     flowblock *p = callop->parent;
 
     op_destroy_ssa(callop);
-    //op_destroy(callop);
+
+    structure_reset();
 
     heritage_clear();
     heritage();
@@ -4429,12 +5202,12 @@ flowblock*      funcdata::cond_inline(funcdata *inlinefd, pcodeop *callop)
 }
 
 
-void        funcdata::cond_pass(void)
+void        funcdata::argument_pass(void)
 {
     int changed = 1;
     pcodeop *p;
-
-    constant_propagation2();
+    flowblock *b;
+    vector<flowblock *> v;
 
     int g_time = 0;
 
@@ -4445,7 +5218,8 @@ void        funcdata::cond_pass(void)
             cond_constant_propagation();
             /* 发生了条件常量传播以后，整个程序的结构发生了变化，整个结构必须得重来 */
             changed = 1;
-            dead_code_elimination(bblocks.blist);
+            dead_code_elimination(bblocks.blist, RDS_0);
+			flags.enable_topstore_mark = 1;
 
             continue;
         }
@@ -4454,7 +5228,7 @@ void        funcdata::cond_pass(void)
             changed = 1;
             /* FIXME:这里判断的过于粗糙，还需要判断整个p->parent是否再循环内*/
             if (bblocks.is_dowhile(p->parent)) {
-                vector<flowblock *> v;
+                v.clear();
                 v.push_back(p->parent);
                 dowhile2ifwhile(v);
                 p = bblocks.first_callop_vmp(NULL);
@@ -4462,17 +5236,32 @@ void        funcdata::cond_pass(void)
                 heritage();
             }
 
-            cond_inline(p->callfd, p);
+            argument_inline(p->callfd, p);
             g_time++;
 
             continue;
+        }
+
+        if (!bblocks.loopheaders.empty()) {
+            b = bblocks.loopheaders.front();
+            bblocks.loopheaders.erase(bblocks.loopheaders.begin());
+
+            changed = 1;
+            if (bblocks.is_dowhile(b)) {
+                v.clear();
+                v.push_back(b);
+                dowhile2ifwhile(v);
+
+                heritage_clear();
+                heritage();
+            }
         }
     }
 
     heritage_clear();
     heritage();
 
-    dead_code_elimination(bblocks.blist);
+    dead_code_elimination(bblocks.blist, RDS_0);
 }
 
 void        funcdata::set_caller(funcdata *caller1, pcodeop *callop1)
@@ -4506,14 +5295,11 @@ void funcdata::structure_reset()
     vector<flowblock *> rootlist;
 
     flags.blocks_unreachable = 0;
+	reset_version++;
 
     bblocks.structure_loops(rootlist);
     bblocks.calc_forward_dominator(rootlist);
-}
-
-/* build dominator tree*/
-void funcdata::build_dom_tree()
-{
+    //bblocks.calc_exitpath();
 }
 
 void        funcdata::clear_blocks()
@@ -4630,7 +5416,7 @@ void        funcdata::heritage(void)
     if (maxdepth == -1)
         build_adt();
 
-    printf("%sheritage scan node.... \n", print_indent());
+    print_info("%sheritage scan node.... \n", print_indent());
     for (i = 0; i < d->trans->numSpaces(); i++) {
         AddrSpace *space = d->trans->getSpace(i);
 
@@ -4663,10 +5449,13 @@ void        funcdata::heritage(void)
     }
     place_multiequal();
     rename();
+	//build_liverange();
 
-    constant_propagation2();
+    long start = clock();
 
-    printf("%sheritage scan node end. \n", print_indent());
+    constant_propagation3();
+
+    print_info("%sheritage scan node end. CP spent [%lu]ms. \n", print_indent(), clock() - start);
 }
 
 void    funcdata::heritage_clear()
@@ -4685,25 +5474,37 @@ void    funcdata::heritage_clear()
     pass = 0;
 }
 
-int     funcdata::constant_propagation2()
+int         funcdata::constant_propagation3()
 {
     list<pcodeop *>::const_iterator iter;
-    list<pcodeop *> w = deadlist;
     list<pcodeop *>::const_iterator iter1;
-    int ret = 0, r;
+	vector<pcodeop *> topstorelist;
+    pcodeop_set::iterator it;
+    pcodeop_set set;
+	pcodeop_set maystore_set;
+    pcodeop *op, *use, *load, *store, *maystore;
+	int ret = 0, r, changed = 0;
     flowblock *b;
+    varnode *out;
 
-    while (!w.empty()) {
-        iter = w.begin();
-        pcodeop *op = *iter;
-        w.erase(iter);
+    for (iter = deadlist.begin(); iter != deadlist.end(); iter++) {
+        op = *iter;
+        if (op->flags.dead) continue;
+        set.insert(op);
+    }
+
+cp_label1:
+    while (!set.empty()) {
+        it = set.begin();
+        op = *it;
+        set.erase(it);
 
         if (op->flags.dead) continue;
 
         if ((op->opcode == CPUI_STORE) && (op->get_in(1)->type.height != a_top)) {
             for (iter1 = op->mayuses.begin(); iter1 != op->mayuses.end(); ++iter1) {
-                pcodeop *use = *iter1;
-                w.push_back(use);
+                use = *iter1;
+                set.insert(use);
             }
             op->mayuses.clear();
         }
@@ -4712,34 +5513,36 @@ int     funcdata::constant_propagation2()
         if (r == ERR_FREE_SELF) continue;
         ret |= r;
 
-        varnode *out = op->output;
+        out = op->output;
 
         if (!out) continue;
 
         if (out->is_constant() || out->is_rel_constant()) {
             for (iter1 = out->uses.begin(); iter1 != out->uses.end(); ++iter1) {
-                pcodeop *use = *iter1;
-                w.push_back(use);
+                set.insert(*iter1);
             }
-
         }
         else if ((op->opcode == CPUI_LOAD) && !op->get_virtualnode() && !op->flags.input) {
-            pcodeop *maydef = NULL;
-            pcodeop *load = op;
- 
-            pcodeop *maystore = NULL;
-
-            pcodeop *store = store_query(load, NULL, load->get_in(1), &maystore);
+            load = op;
+            maystore = NULL;
+            store = store_query(load, NULL, load->get_in(1), &maystore);
 
             if (!store) {
                 if (maystore) {
                     maystore->add_mayuse(load);
+					maystore_set.insert(maystore);
                 }
                 continue;
             }
 
+            if (store->opcode != CPUI_STORE) {
+                load->output->set_val(0);
+                load->flags.val_from_sp_alloc = 1;
+                continue;
+            }
+
             safe_aliaslist.push_back(load);
-            w.push_back(load);
+            set.insert(load);
             if (store->parent->fd != this) {
                 load->output->type = store->get_in(2)->type;
                 load->flags.input = 1;
@@ -4755,49 +5558,55 @@ int     funcdata::constant_propagation2()
             }
             else {
                 Address oaddr(d->get_uniq_space(), virtualbase += in->size);
-                varnode *out;
                 out = new_varnode_out(in->size, oaddr, store);
 
                 op_resize(load, 3);
                 op_set_input(load, out, 2);
-                w.push_back(store);
+                set.insert(store);
             }
         }
     }
 
+	topstorelist.clear();
+	while (!maystore_set.empty()) {
+        it = maystore_set.begin();
+        op = *it;
+        maystore_set.erase(it);
+
+		if (op->flags.dead) continue;
+
+		op->mayuses.clear();
+		if (op->get_in(1)->type.height == a_top)
+			topstorelist.push_back(op);
+	}
+
+	if (flags.enable_topstore_mark && !topstorelist.empty()) {
+		sort(topstorelist.begin(), topstorelist.end(), pcodeop_domdepth_cmp());
+
+		op = topstorelist[0];
+		flowblock *b = op->parent;
+		while (b) {
+			if (b->in.size() > 1) break;
+
+			b = b->in.size() ? b->get_in(0):NULL;
+		}
+
+		if (!b) {
+			changed = 1;
+			op->flags.uncalculated_store = 1;
+			for (iter1 = op->mayuses.begin(); iter1 != op->mayuses.end(); iter1++) {
+				set.insert(*iter1);
+			}
+
+			op->mayuses.clear();
+
+			goto cp_label1;
+		}
+	}
+
     return ret;
 }
 
-int     funcdata::constant_propagation(int listype)
-{
-    list<pcodeop *>::const_iterator iter;
-    list<pcodeop *> w = listype ? safe_aliaslist:deadlist;
-    list<pcodeop *>::const_iterator iter1;
-    int ret = 0;
-    flowblock *b;
-
-    while (!w.empty()) {
-        iter = w.begin();
-        pcodeop *op = *iter;
-        w.erase(iter);
-
-        if (op->flags.dead) continue;
-
-        ret |= op->compute(-1, &b);
-
-        varnode *out = op->output;
-        if (!out) continue;
-
-        if (out->is_constant() || out->is_rel_constant()) {
-            for (iter1 = out->uses.begin(); iter1 != out->uses.end(); ++iter1) {
-                pcodeop *use = *iter1;
-                w.push_back(use);
-            }
-        }
-    }
-
-    return ret;
-}
 
 int         funcdata::cond_constant_propagation()
 {
@@ -4834,7 +5643,7 @@ int         funcdata::cond_constant_propagation()
 
     //printf("%safter cbr remove, now blocks size = %d, dead is = %d\n", print_indent(), bblocks.get_size(), bblocks.deadlist.size());
 
-    redundbranch_appy();
+    redundbranch_apply();
     emptylist.clear();
 
     heritage_clear();
@@ -4849,22 +5658,31 @@ void    funcdata::compute_sp(void)
         throw LowlevelError("compute sp need block generated");
 }
 
-/* FIXME:set_safezone 函数和 in_safezone 都使用codespace作为空间，我是乱写的 
-因为实际上的AddrSpace基本不参与太具体的运算所以填啥基本都ok，只要不写NULL, 
-我这里实际上想写的是 StackSpace，但是我没找到这么一个StackSpace;
-*/
 void        funcdata::set_safezone(intb addr, int size)
 {
-    addr += safezone_base;
-    safezone.insertRange(d->get_code_space(), addr, addr + size);
+    rangenode *range = new rangenode();
+
+    /* 现在的safezone只能设置stack space上的 */
+    range->start = STACKBASE + addr;
+    range->size = size;
+
+    safezone.push_back(range);
 }
 
 bool        funcdata::in_safezone(intb a, int size)
 {
-    a += safezone_base;
+    rangenode *n;
+    list<rangenode *>::iterator  it;
 
-    Address addr(d->get_code_space(), a);
-    return safezone.inRange(addr, size);
+    a += STACKBASE;
+
+    for (it = safezone.begin(); it != safezone.end(); it++) {
+        n = *it;
+        if ((a >= n->start) && (a + size) <= n->end())
+            return true;
+    }
+
+    return false;
 }
 
 void        funcdata::enable_safezone(void)
@@ -4931,11 +5749,8 @@ void        funcdata::remove_from_codelist(pcodeop *op)
 
     case CPUI_STORE:
         storelist.erase(op->codeiter);
+		break;
     }
-}
-
-void        funcdata::calc_load_store_info()
-{
 }
 
 bool        funcdata::test_hard_inline_restrictions(funcdata *inlinefd, pcodeop *op, Address &retaddr)
@@ -4966,7 +5781,7 @@ bool        funcdata::is_first_op(pcodeop *op)
     return *it == op;
 }
 
-pcodeop*    funcdata::loop_pre_get(flowblock *h, int index)
+flowblock*    funcdata::loop_pre_get(flowblock *h, int index)
 {
     flowblock *pre = NULL;
     int i, sizein = h->in.size();
@@ -4976,7 +5791,7 @@ pcodeop*    funcdata::loop_pre_get(flowblock *h, int index)
         pre = h->get_in(i);
         
         if (pre->dfnum < h->dfnum)
-            return pre->last_op();
+            return pre;
     }
 
     return NULL;
@@ -5010,11 +5825,14 @@ void        funcdata::trace_clear()
     trace.clear();
 }
 
-pcodeop*    funcdata::trace_store_query(varnode *vn)
+pcodeop*    funcdata::trace_store_query(pcodeop *load)
 {
     vector<pcodeop *>::reverse_iterator it;
     pcodeop *p, *maystore = NULL;
-    varnode *in;
+    varnode *in, *vn = load->get_in(1);
+
+    if (trace.empty()) 
+        return store_query(load, NULL, vn, &maystore);
 
     for (it = trace.rbegin(); it != trace.rend(); it++) {
         p = *it;
@@ -5033,8 +5851,8 @@ pcodeop*    funcdata::store_query(pcodeop *load, flowblock *b, varnode *pos, pco
 {
     list<pcodeop *>::reverse_iterator it;
     flowblock *bb;
-    pcodeop *p;
-    
+    pcodeop *p, *tmpstore;
+
     if (load) {
         it = load->parent->get_rev_iterator(load);
         b = load->parent;
@@ -5047,8 +5865,129 @@ pcodeop*    funcdata::store_query(pcodeop *load, flowblock *b, varnode *pos, pco
         for (; it != b->ops.rend(); it++) {
             p = *it;
 
-            if (!p->flags.inlined && have_side_effect(p, pos))
+            if (!p->flags.inlined && b->fd->have_side_effect(p, pos)) {
                 return NULL;
+            }
+            if (p->in_sp_alloc_range(pos)) return p;
+            if (p->opcode != CPUI_STORE) continue;
+			if (p->flags.uncalculated_store) continue;
+
+            varnode *a = p->get_in(1);
+
+            if (a->type.height == a_top) {
+                if (b->fd == this) *maystore = p;
+                return NULL;
+            }
+
+            if (a->type == pos->type)
+                return p;
+        }
+
+        if (b->is_entry_point()) {
+            if (b->fd->caller) {
+                pcodeop *p1 = b->fd->callop;
+                b =  b->fd->callop->parent;
+                it = b->get_rev_iterator(p1);
+                // skip , FIXME:没有处理当这个op已经为第一个的情况
+                ++it;
+            }
+            else
+                break;
+        }
+        else if (b->in.size() > 1){
+            flowblock *dom = b->immed_dom;
+            vector<flowblock *> stack;
+            vector<int> visited;
+
+            visited.clear();
+            visited.resize(b->fd->bblocks.get_size());
+
+            tmpstore = NULL;
+            for (int i = 0; i < b->in.size(); i++) {
+                if (b->get_in(i) == dom) continue;
+                stack.push_back(b->get_in(i));
+            }
+
+            while (!stack.empty()) {
+                b = stack.back();
+                stack.pop_back();
+
+                if (visited[b->dfnum])
+                    continue;
+
+                visited[b->dfnum] = 1;
+
+                for (it = b->ops.rbegin(); it != b->ops.rend(); it++) {
+                    p = *it;
+
+                    if (have_side_effect(p, pos))
+                        return NULL;
+
+                    if (p->opcode == CPUI_STORE) {
+                        varnode *a = p->get_in(1);
+
+                        /* 在分支中找到了store节点，假如是第一个就保存起来，
+                        假如不是第一个，则比较是否相等，不是的话返回NULL */
+                        if (a->type == pos->type) {
+#if 0
+                            if (NULL == tmpstore)
+                                tmpstore = p;
+                            else if (tmpstore->get_in(2) != p->get_in(2))
+                                return NULL;
+#else
+                            return NULL;
+#endif
+                        }
+                    }
+                }
+
+                for (int i = 0; i < b->in.size(); i++) {
+                    bb = b->get_in(i);
+                    if (bb == dom)
+                        continue;
+
+                    stack.push_back(bb);
+                }
+            }
+
+            if (tmpstore)
+                return tmpstore;
+
+            b = dom;
+            it = b->ops.rbegin();
+       }
+        else {
+            b = b->get_in(0);
+            it = b->ops.rbegin();
+        }
+    }
+
+    return NULL;
+}
+
+pcodeop*    funcdata::store_query2(pcodeop *load, flowblock *b, varnode *pos, pcodeop **maystore)
+{
+    list<pcodeop *>::reverse_iterator it;
+    flowblock *bb;
+    pcodeop *p;
+
+    if (load) {
+        it = load->parent->get_rev_iterator(load);
+        b = load->parent;
+
+    }
+    else {
+        it = b->ops.rbegin();
+    }
+
+    while (1) {
+        for (; it != b->ops.rend(); it++) {
+            p = *it;
+
+            if (!p->flags.inlined && have_side_effect(p, pos)) {
+                return NULL;
+            }
+            if (p->in_sp_alloc_range(pos)) return p;
             if (p->opcode != CPUI_STORE) continue;
 
             varnode *a = p->get_in(1);
@@ -5131,130 +6070,99 @@ pcodeop*    funcdata::store_query(pcodeop *load, flowblock *b, varnode *pos, pco
     return NULL;
 }
 
-bool       funcdata::loop_unrolling2(flowblock *h, int vm_caseindex, uint32_t flags)
+bool        funcdata::loop_unrolling4(flowblock *h, int vm_caseindex, uint32_t flags)
 {
-    flowblock *cur = loop_unrolling(h, h, flags);
-    pcodeop *p;
-
-    cur->vm_caseindex = vm_caseindex;
-
-    if (flags & _DUMP_ORIG_CASE)
-        return 0;
-
-    vector<flowblock *> stack;
-    vector<flowblock *> v;
-
-    stack.push_back(cur);
-
-    cur->mark_unsplice();
-
-    while ((stack.back() != h) && !stack.empty()) {
-        flowblock *b = stack.back();
-        list<pcodeop *>::iterator it;
-
-        if (b->out.empty()) {
-            b->flags.f_cond_cbranch = 0;
-            stack.pop_back();
-            b->set_mark();
-            continue;
-        }
-
-        /* 是循环节点，进行循环展开 */
-        if (b->get_back_edge_count()) {
-            loop_unrolling(b, h, _DUMP_PCODE | _DONT_CLONE);
-            stack.pop_back();
-            dump_cfg(name, "check2", 1);
-            continue;
-        }
-        else if (b->flags.f_cond_cbranch) {
-            b->flags.f_cond_cbranch = 0;
-            loop_unrolling(b, h, _DUMP_PCODE | _DONT_CLONE);
-            stack.pop_back();
-            dump_cfg(name, "check1", 1);
-            continue;
-        }
-        else if (0) {
-            flowblock *d = NULL;
-            vector<flowblock *> cloneblks;
-        }
-        else {
-            /* 不是的话，检测块内 */
-            for (it = b->ops.begin(); it != b->ops.end(); it++) {
-                p = *it;
-                if (p->is_call() && d->test_cond_inline(d, p->get_call_offset()))
-                    break;
-            }
-
-            if (it == b->ops.end()) {
-                if (b->get_out(0)->is_mark()) {
-                    b->set_mark();
-                    stack.pop_back();
-                }
-                else 
-                    stack.push_back(b->get_out(0));
-                continue;
-            }
-
-            cond_inline(p->callfd, p);
-
-            b->mark_unsplice();
-            if (!cbrlist.empty())
-                cond_constant_propagation();
-
-            v.clear();
-            v.push_back(b);
-            dead_code_elimination(v);
-
-            dump_cfg(name, "check0", 1);
-        }
-
-        stack.push_back(b->get_out(0));
-    }
-
-    bblocks.clear_marks();
-
-    return true;
-}
-
-bool        funcdata::loop_unrolling3(flowblock *h, int vm_caseindex, uint32_t flags)
-{
-    flowblock *cur = loop_unrolling(h, h, flags);
+    int meet_exit, i, inslot;
+    flowblock *cur = loop_unrolling(h, h, flags, meet_exit);
     vector<flowblock *> blks;
     pcodeop *p;
+    char buf[32];
 
     cur->vm_caseindex = vm_caseindex;
 
+    if (meet_exit) return true;
+
     if (flags & _DUMP_ORIG_CASE)
         return 0;
+
+#if defined(DCFG_BEFORE)
+    sprintf(buf, "%d_orig", vm_caseindex);
+    dump_cfg(name, buf, 1);
+#endif
 
     vector<flowblock *> stack;
     vector<flowblock *> v;
     flowblock *b, *bb, *c;
     list<pcodeop *>::iterator it;
+    varnode *iv, *vn, *vn1;
 
     cur->mark_unsplice();
     stack.push_back(cur);
 
-    while (stack.back() != h) {
-        b = stack.back();
-        it;
 
-        /* 是循环节点，进行循环展开 */
-        if (b->get_back_edge_count()) {
-            loop_unrolling(b, h, _DUMP_PCODE | _DONT_CLONE);
+    while ((stack.back() != h) && !stack.empty()) {
+        b = stack.back();
+
+#if 1
+        blks.clear();
+        collect_blocks_to_node(blks, b, h);
+        inslot = h->get_inslot(blks[0]);
+        iv = detect_induct_variable(h, c);
+        vn = iv->def->get_in(inslot);
+
+        if ((blks.size() == 1) && vn->is_constant()) 
+            break;
+
+        if ((blks.size() > 1) && vn->is_constant()) {
+            for (i = 1; i < blks.size(); i++) {
+                inslot = h->get_inslot(blks[i]);
+                vn1 = iv->def->get_in(inslot);
+
+                if (!vn1->is_constant() || (vn1->get_val() != vn->get_val()))
+                    break;
+            }
+
+            if (i == blks.size()) {
+                bb = combine_multi_in_before_loop(blks, h);
+                heritage_clear();
+                heritage();
+                stack.push_back(bb);
+                continue;
+            }
+        }
+#endif
+
+        if (b->out.empty()) {
+            b->flags.f_cond_cbranch = 0;
             stack.pop_back();
+            b->set_mark();
+        }
+        else if (b->get_back_edge_count()) {
+        /* 是循环节点，进行循环展开 */
+#if defined(DCFG_AFTER_PCODE)
+            loop_unrolling(b, h, _DUMP_PCODE | _DONT_CLONE, meet_exit);
+#else
+            loop_unrolling(b, h, _DONT_CLONE, meet_exit);
+#endif
+            stack.pop_back();
+#if defined(DCFG_AFTER)
             dump_cfg(name, "check2", 1);
-            continue;
+#endif
         }
         else if (b->flags.f_cond_cbranch) {
             b->flags.f_cond_cbranch = 0;
-            loop_unrolling(b, h, _DUMP_PCODE | _DONT_CLONE);
+#if defined(DCFG_AFTER_PCODE)
+            loop_unrolling(b, h, _DUMP_PCODE | _DONT_CLONE, meet_exit);
+#else
+            loop_unrolling(b, h, _DONT_CLONE, meet_exit);
+#endif
             stack.pop_back();
+#if defined(DCFG_AFTER)
             dump_cfg(name, "check1", 1);
-            continue;
+#endif
         }
         else if (p = get_vmcall(b)) {
-            cond_inline(p->callfd, p);
+            argument_inline(p->callfd, p);
 
             b->mark_unsplice();
             if (!cbrlist.empty())
@@ -5262,54 +6170,45 @@ bool        funcdata::loop_unrolling3(flowblock *h, int vm_caseindex, uint32_t f
 
             v.clear();
             v.push_back(b);
-            dead_code_elimination(v);
+            dead_code_elimination(v, RDS_UNROLL0);
 
+#if defined(DCFG_AFTER)
             dump_cfg(name, "check0", 1);
-            continue;
-        }
-        else if ((b->out.size() != 1)) {
-#if 0
-            for (i = 0; i < b->out.size(); i++) {
-                e = &b->out[i];
-
-                if (e->label & a_mark) continue;
-
-                if (e->point == h) e->label |= a_mark;
-
-                break;
-            }
-
-            if (i == b->out.size()) {
-                stack.pop_back();
-                if (!stack.empty()) {
-                    i = (bb = stack.back())->get_out_index(b);
-                    e = &bb->out[i];
-                    e->label |= a_mark;
-                }
-                continue;
-            }
 #endif
+        }
+        else if (b->get_out(0)->is_mark()) {
+            stack.pop_back();
+        }
+        else if (b->out.size() == 1) {
+            stack.push_back(b->get_out(0));
+        }
+        else if (b->get_out(0)->flags.f_cond_cbranch) {
+            stack.push_back(b->get_out(0));
+        }
+        else if (!b->get_out(0)->get_back_edge_count() && !b->get_out(1)->get_back_edge_count()) {
+            stack.push_back(b->get_out(0));
+        }
+        else {
             bb = bblocks.find_loop_exit(b, get_vmhead());
 
-            clone_ifweb(b, b, bb, blks);
             blks.clear();
+            clone_ifweb(b, b, bb, blks);
             structure_reset();
 
-            dump_cfg(name, "check3", 1);
-
+            blks.clear();
             collect_blocks_to_node(blks, b, bb);
             c = combine_multi_in_before_loop(blks, bb);
             heritage_clear();
             heritage();
 
+#if defined(DCFG_AFTER)
             dump_cfg(name, "check3", 1);
+#endif
 
             stack.push_back(c);
 
             continue;
         }
-
-        stack.push_back(b->get_out(0));
     }
 
     bblocks.clear_marks();
@@ -5317,19 +6216,21 @@ bool        funcdata::loop_unrolling3(flowblock *h, int vm_caseindex, uint32_t f
     return true;
 }
 
-flowblock*       funcdata::loop_unrolling(flowblock *h, flowblock *end, uint32_t flags)
+flowblock*       funcdata::loop_unrolling(flowblock *h, flowblock *end, uint32_t flags, int &meet_exit)
 {
     int i, inslot, ret;
-    flowblock *start,  *cur, *prev, *br, *tmpb;
+    flowblock *start,  *cur, *prev, *br, *tmpb, *exit = NULL;
     list<pcodeop *>::const_iterator it;
     const SeqNum sq;
     pcodeop *p, *op;
     varnode *iv = NULL;
 
+    meet_exit = 0;
+
     printf("\n\nloop_unrolling sub_%llx \n", h->get_start().getOffset());
 
     /* 取loop的进入节点*/
-    prev = start = loop_pre_get(h, 0)->parent;
+    prev = start = loop_pre_get(h, 0);
     /* FIXME:压入trace堆栈 
     这种压入方式有问题，无法识别 undefined bcond
     */
@@ -5337,7 +6238,7 @@ flowblock*       funcdata::loop_unrolling(flowblock *h, flowblock *end, uint32_t
     cur = h;
 
     if (flags & _NOTE_VMBYTEINDEX) {
-        iv = detect_induct_variable(h);
+        iv = detect_induct_variable(h, exit);
     }
 
     do {
@@ -5370,6 +6271,12 @@ flowblock*       funcdata::loop_unrolling(flowblock *h, flowblock *end, uint32_t
 
         prev = cur;
         cur = br;
+
+        /* 循环展开到最后一个终止节点 */
+        if (exit && (exit == cur)) {
+            meet_exit = 1;
+            break;
+        }
     } while (cur != end);
 
     /* 把刚才走过的路径复制出来，剔除jmp节点，最后一个节点的jmp保留 */
@@ -5398,9 +6305,14 @@ flowblock*       funcdata::loop_unrolling(flowblock *h, flowblock *end, uint32_t
         }
 
         /* 最后一个节点的jmp指令不删除 */
-        if ((i != (trace.size() - 1)) 
-            && ((p->opcode == CPUI_BRANCH) || (p->opcode == CPUI_CBRANCH) || (p->opcode == CPUI_INDIRECT) || (p->opcode == CPUI_MULTIEQUAL) || (p->opcode == CPUI_BRANCHIND) || p->flags.copy_from_phi))
+        if (((i != (trace.size() - 1)) 
+            && ((p->opcode == CPUI_BRANCH) || (p->opcode == CPUI_CBRANCH) || (p->opcode == CPUI_INDIRECT) || (p->opcode == CPUI_MULTIEQUAL) || (p->opcode == CPUI_BRANCHIND))))
             continue;
+
+        /* 假如循环展开结束，则最后一个节点不处理 */
+        if ((i == (trace.size() - 1)) && meet_exit && (p->opcode == CPUI_CBRANCH)) {
+            continue;
+        }
 
         Address addr2(d->get_code_space(), user_offset + p->get_addr().getOffset());
         const SeqNum sq(addr2, op_uniqid++);
@@ -5443,7 +6355,7 @@ flowblock*       funcdata::loop_unrolling(flowblock *h, flowblock *end, uint32_t
             clone_ifweb(cur, br, end, cloneblks);
     }
     else {
-        bblocks.add_edge(cur, end);
+        bblocks.add_edge(cur, meet_exit?exit:end);
     }
     cloneblks.push_back(cur);
 
@@ -5461,7 +6373,7 @@ flowblock*       funcdata::loop_unrolling(flowblock *h, flowblock *end, uint32_t
     heritage_clear();
     heritage();
 
-    dead_code_elimination(cloneblks);
+    dead_code_elimination(cloneblks, RDS_UNROLL0);
 
     return cur;
 }
@@ -5507,7 +6419,7 @@ int         funcdata::collect_blocks_to_node(vector<flowblock *> &blks, flowbloc
     return 0;
 }
 
-void        funcdata::dead_code_elimination(vector<flowblock *> blks)
+void        funcdata::dead_code_elimination(vector<flowblock *> blks, uint32_t flags)
 {
     flowblock *b;
     list<pcodeop *>::iterator it;
@@ -5577,21 +6489,31 @@ void        funcdata::dead_code_elimination(vector<flowblock *> blks)
         }
 
         if (marks[op->parent->dfnum]) {
-            //printf("dce pcode: %d\n", op->start.getTime());
-            op_destroy(op);
+            op_destroy(op, 1);
         }
     }
 
     flowblock *h;
-    if ((bblocks.get_size() > 100) && (h = get_vmhead_unroll())) 
-        remove_dead_store(h);
-    else
+
+    if (flags & RDS_0) 
         remove_dead_store(bblocks.get_block(0));
+
+    if ((flags & RDS_UNROLL0) && (h = get_vmhead_unroll())) 
+        remove_dead_store(h);
 }
 
-bool        funcdata::is_code(varnode *v) 
+bool        funcdata::is_code(varnode *v0, varnode *v1) 
 { 
-    return (v->loc.getSpace()->getType() == IPTR_CONSTANT) && (v->loc.getOffset() == (uintb)(d->trans->getDefaultCodeSpace())); 
+    if ((v0->loc.getSpace()->getType() == IPTR_CONSTANT) && (v0->loc.getOffset() == (uintb)(d->trans->getDefaultCodeSpace())) && v1->is_constant()) {
+
+        /* FIXME: hardcode 直接编码了libjiagu.so 的 bss段位置，后面要去掉，从ida中获取到的 */
+        if ((v1->get_val() >= 0x855dc) && (v1->get_val() < 0x8576c))
+            return false;
+
+        return true;
+    }
+
+    return false;
 }
 
 bool        funcdata::is_sp_rel_constant(varnode *v)
@@ -5605,7 +6527,7 @@ void        funcdata::place_multiequal(void)
     vector<varnode *> readvars;
     vector<varnode *> writevars;
     vector<varnode *> inputvars;
-    pcodeop *multiop;
+    pcodeop *multiop, *p;
     varnode *vnin;
     blockbasic *bl;
     int max, i, j;
@@ -5628,6 +6550,9 @@ void        funcdata::place_multiequal(void)
         if (readvars.empty() && writevars.empty())
             continue;
 
+        if (!d->is_cpu_reg(addr))
+            continue;
+
         calc_phi_placement2(writevars);
         for (i = 0; i < merge.size(); ++i) {
             bl = merge[i];
@@ -5636,7 +6561,7 @@ void        funcdata::place_multiequal(void)
             varnode *vnout = NULL;
 
             for (multiop = NULL; it != bl->ops.end(); it++) {
-                pcodeop *p = *it;
+                p = *it;
 
                 if ((p->opcode != CPUI_MULTIEQUAL) && !p->flags.copy_from_phi) break;
                 if (p->output->get_addr() == addr) {
@@ -5644,6 +6569,11 @@ void        funcdata::place_multiequal(void)
                     break;
                 }
             }
+
+            /* 假如说某个PHI节点已经被转成了copy节点，则说明这个值已经被常量化，这个节点在下次heritage
+            时已经被需要在插入phi 了。 
+            FIXME:这个理解是否正确？*/
+            if ((it != bl->ops.end()) && p->flags.copy_from_phi) continue;
 
             if (!multiop) {
                 multiop = newop(bl->in.size(), bl->get_start());
@@ -5659,6 +6589,7 @@ void        funcdata::place_multiequal(void)
                         op_remove_input(multiop, 0);
 
                     op_set_opcode(multiop, CPUI_MULTIEQUAL);
+                    multiop->flags.copy_from_phi = 0;
                 }
 
                 j = multiop->num_input();
@@ -5667,12 +6598,6 @@ void        funcdata::place_multiequal(void)
             for (; j < bl->in.size(); j++) {
                 vnin = new_varnode(size, addr);
                 op_set_input(multiop, vnin, j);
-            }
-
-            /* FIXME: 硬编码，用来标注虚拟机开头 */
-            if ((bl->get_start().getOffset() == 0xcbc0) && (addr == d->r3_addr)) {
-                multiop->output->set_rel_constant(d->sp_addr, -0x188);
-                multiop->flags.force_constant = 1;
             }
         }
     }
@@ -5695,21 +6620,20 @@ void        funcdata::rename_recurse(blockbasic *bl, variable_stack &varstack, v
     /* 当前block内，被def过得varnode集合 */
     vector<varnode *> writelist;
     blockbasic *subbl;
-    list<pcodeop *>::iterator oiter, suboiter;
+    list<pcodeop *>::iterator oiter, suboiter, next;
     pcodeop *op, *multiop;
     varnode *vnout, *vnin, *vnnew;
-    int i, slot, j = 0, set_begin = 0;
+    int i, slot, set_begin = 0, order;
 
-    for (oiter = bl->ops.begin(); oiter != bl->ops.end(); (set_begin ? oiter = bl->ops.begin():oiter++)) {
+    for (oiter = bl->ops.begin(), order = 0; oiter != bl->ops.end(); oiter = next, order++) {
         op = *oiter ;
-        op->start.setOrder(j++);
-        set_begin = 0;
+		next = ++oiter;
+        op->start.setOrder(order);
 
         if (op->opcode != CPUI_MULTIEQUAL) {
             if ((op->opcode == CPUI_COPY) && (op->output->get_addr() == op->get_in(0)->get_addr())) {
-                if (oiter == bl->ops.begin())  set_begin = 1;
-                else oiter--;
                 op_destroy_ssa(op);
+				order--;
                 continue;
             }
 
@@ -5729,8 +6653,7 @@ void        funcdata::rename_recurse(blockbasic *bl, variable_stack &varstack, v
                 else 
                     vnnew = stack.back();
 
-                if (vnnew->flags.written && (vnnew->def->opcode == CPUI_INDIRECT)) {
-                }
+				vnnew->add_ref_point_simple(op);
 
                 op_set_input(op, vnnew, slot);
                 if (vnin->has_no_use()) {
@@ -5739,37 +6662,19 @@ void        funcdata::rename_recurse(blockbasic *bl, variable_stack &varstack, v
             }
         }
 
-        if (op->is_call()) {
-            if (op->callctx) delete op->callctx;
-
-            cpuctx *ctx = new cpuctx();
-            
-            vector<varnode *> *stack = &(varstack[d->r0_addr]);
-            if (!stack->empty()) ctx->r0 = stack->back();
-
-            stack = &(varstack[d->r1_addr]);
-            if (!stack->empty()) ctx->r1 = stack->back();
-
-            stack = &(varstack[d->r2_addr]);
-            if (!stack->empty()) ctx->r2 = stack->back();
-
-            stack = &(varstack[d->r3_addr]);
-            if (!stack->empty()) ctx->r3 = stack->back();
-
-            stack = &(varstack[d->lr_addr]);
-            if (!stack->empty()) ctx->lr = stack->back();
-
-            stack = &(varstack[d->sp_addr]);
-            if (!stack->empty()) ctx->sp = stack->back();
-
-            op->callctx = ctx;
-        }
-
         vnout = op->output;
         if (vnout == NULL) continue;
         vnout->version = ++vermap[vnout->get_addr()];
-        varstack[vnout->get_addr()].push_back(vnout);
+
+		vector<varnode *> &stack(varstack[vnout->get_addr()]);
+		if (!stack.empty() && d->is_cpu_base_reg(vnout->get_addr())) {
+			vnnew = stack.back();
+			vnnew->add_ref_point_simple(op);
+		}
+        stack.push_back(vnout);
         writelist.push_back(vnout);
+
+		vnout->add_def_point_simple();
     }
 
     for (i = 0; i < bl->out.size(); ++i) {
@@ -5794,6 +6699,8 @@ void        funcdata::rename_recurse(blockbasic *bl, variable_stack &varstack, v
             else
                 vnnew = stack.back();
 
+			vnnew->add_ref_point_simple(multiop);
+
             op_set_input(multiop, vnnew, slot);
             if (!vnin->uses.size()) {
                 delete_varnode(vnin);
@@ -5814,8 +6721,92 @@ void        funcdata::rename_recurse(blockbasic *bl, variable_stack &varstack, v
             vector<varnode *> &stack = it->second;
             pair<pcodeop_def_set::iterator, bool> check;
             varnode *v;
-            if (!stack.empty() && (v = stack.back())->is_reg() && v->def)
+			if (!stack.empty() && (v = stack.back())->is_reg() && v->def) {
                 topname.insert(v->def);
+				v->add_ref_point_simple(bl->last_op());
+			}
+        }
+    }
+
+    for (i = 0; i < writelist.size(); ++i) {
+        vnout = writelist[i];
+
+        vector<varnode *> &stack(varstack[vnout->get_addr()]);
+        varnode *v = stack.back();
+        stack.pop_back();
+    }
+}
+
+void		funcdata::build_liverange()
+{
+    variable_stack varstack;
+
+    build_liverange_recurse(bblocks.get_block(0), varstack);
+}
+
+void        funcdata::build_liverange_recurse(blockbasic *bl, variable_stack &varstack)
+{
+    /* 当前block内，被def过得varnode集合 */
+    vector<varnode *> writelist;
+	list<pcodeop *>::iterator oiter;
+	pcodeop *op;
+    varnode *vnout, *vnin, *vnnew;
+    int i, slot, order;
+
+    for (oiter = bl->ops.begin(), order = 0; oiter != bl->ops.end(); oiter++) {
+        op = *oiter ;
+		//op->start.setOrder(order);
+
+		for (slot = 0; slot < op->inrefs.size(); ++slot) {
+			vnin = op->get_in(slot);
+
+			if (vnin->flags.annotation || (vnin->is_constant() && vnin->get_addr().isConstant()))
+				continue;
+
+			/* 省略掉load的虚拟节点 */
+			if ((op->opcode == CPUI_LOAD) && (slot == 2))
+				continue;
+
+			vector<varnode *> &stack(varstack[vnin->get_addr()]);
+			if (stack.empty()) {
+				vnin->clear_cover();
+				vnin->add_ref_point(op);
+				stack.push_back(vnin);
+			}
+			else {
+				vnnew = stack.back();
+				vnnew->add_ref_point(op);
+			}
+		}
+
+        vnout = op->output;
+        if (vnout == NULL) continue;
+		if (op->opcode == CPUI_STORE) continue;
+
+		vector<varnode *> &stack(varstack[vnout->get_addr()]);
+		if (!stack.empty() && d->is_cpu_base_reg(vnout->get_addr())) {
+			vnnew = stack.back();
+			vnnew->add_ref_point(op);
+		}
+
+        stack.push_back(vnout);
+        writelist.push_back(vnout);
+		vnout->add_def_point();
+    }
+
+    i = bl->index;
+    for (slot = 0; slot < domchild[i].size(); ++slot)
+        build_liverange_recurse(domchild[i][slot], varstack);
+
+    if (bl->is_end()) {
+        variable_stack::iterator it;
+        for (it = varstack.begin(); it != varstack.end(); it++) {
+            vector<varnode *> &stack = it->second;
+            pair<pcodeop_def_set::iterator, bool> check;
+            varnode *v;
+			if (!stack.empty() && d->is_cpu_base_reg((v = stack.back())->get_addr())) {
+				v->add_ref_point(bl->last_op());
+			}
         }
     }
 
@@ -5939,7 +6930,8 @@ flowblock*  funcdata::get_vmhead(void)
     int i, max_count = -1, t;
     flowblock *max = NULL;
 
-    if (vmhead) return vmhead;
+    if (vmhead) 
+        return vmhead->flags.f_dead ? NULL : vmhead;
 
     for (i = 0; i < bblocks.blist.size(); i++) {
         t = bblocks.blist[i]->get_back_edge_count();
@@ -5955,7 +6947,10 @@ flowblock*  funcdata::get_vmhead(void)
 flowblock*  funcdata::get_vmhead_unroll(void)
 {
     flowblock *h = get_vmhead();
-    flowblock *start = loop_pre_get(h, 0)->parent;
+
+    if (!h) return NULL;
+
+    flowblock *start = loop_pre_get(h, 0);
 
     while ((start->in.size() == 1) && (start->get_in(0)->out.size() == 1))
         start = start->get_in(0);
@@ -6021,11 +7016,9 @@ void        funcdata::branch_remove_internal(blockbasic *bb, int num)
     list<pcodeop *>::iterator iter;
     int blocknum;
 
-    if (bb->out.size() == 2) {
-        pcodeop *last = bb->last_op();
-        assert(last->opcode == CPUI_CBRANCH);
-        op_destroy(last);
-    }
+	pcodeop *last = bb->last_op();
+	if (last && (last->opcode == CPUI_CBRANCH) && (bb->out.size() == 2))
+		op_destroy(last, 1);
 
     bbout = (blockbasic *)bb->get_out(num);
     blocknum = bbout->get_in_index(bb);
@@ -6059,21 +7052,7 @@ void        funcdata::block_remove_internal(blockbasic *bb, bool unreachable)
     while (iter != bb->ops.end()) {
         op = *iter;
         iter++;
-#if 0
-        if (op->output) {
-            deadvn = op->output;
-            if (unreachable) {
-                use2undef(deadvn);
-            }
-
-            if (use_outside(deadvn))
-                throw LowlevelError("deleting op with use");
-        }
-
-        op_destroy(op);
-#else
         op_destroy_ssa(op);
-#endif
     }
     bblocks.remove_block(bb);
 }
@@ -6119,7 +7098,7 @@ void        funcdata::splice_block_basic(blockbasic *bl)
     if (!bl->ops.empty()) {
         pcodeop *jumpop = bl->last_op();
         if ((jumpop->opcode == CPUI_BRANCH) || (jumpop->opcode == CPUI_CBRANCH))
-            op_destroy(jumpop);
+            op_destroy(jumpop, 1);
     }
 
     if (!outbl->ops.empty()) {
@@ -6159,14 +7138,14 @@ void        funcdata::remove_empty_block(blockbasic *bl)
         bblocks.remove_edge(prev, prev->get_out(0));
 
         if (prev->last_op()->opcode == CPUI_CBRANCH) {
-            op_destroy(prev->last_op());
+            op_destroy(prev->last_op(), 1);
         }
     }
 
     structure_reset();
 }
 
-void        funcdata::redundbranch_appy()
+void        funcdata::redundbranch_apply()
 {
     int i;
     flowblock *bb, *bl;
@@ -6204,6 +7183,8 @@ void        funcdata::redundbranch_appy()
             }
         }
     }
+
+	structure_reset();
 }
 
 void        funcdata::dump_store_info(const char *postfix)
@@ -6213,6 +7194,7 @@ void        funcdata::dump_store_info(const char *postfix)
     pcodeop *op;
     varnode *vn;
     FILE *fp;
+	int i = 0;
 
     sprintf(obuf, "%s/%s/store_%s.txt", d->filename.c_str(), name.c_str(), postfix);
 
@@ -6221,7 +7203,7 @@ void        funcdata::dump_store_info(const char *postfix)
     for (it = storelist.begin(); it != storelist.end(); it++) {
         op = *it;
         if (op->is_dead()) {
-            printf("op store[%d] is dead\n", op->start.getTime());
+            printf("op store[%d] is dead, %d\n", op->start.getTime(), ++i);
             continue;
         }
         vn = op->get_in(1);
@@ -6234,6 +7216,8 @@ void        funcdata::dump_store_info(const char *postfix)
     }
 
     fclose(fp);
+
+	printf("oplist.size = %d\n", deadlist.size());
 }
 
 void        funcdata::dump_load_info(const char *postfix)
@@ -6304,15 +7288,6 @@ char*       funcdata::get_dir(char *buf)
     return buf;
 }
 
-int         funcdata::get_input_sp_val()
-{
-    if (callop) {
-        return callop->callctx->sp->type.v;
-    }
-    else
-        return 0;
-}
-
 void        funcdata::alias_clear(void)
 {
     list<pcodeop *> w = storelist;
@@ -6350,9 +7325,12 @@ bool        funcdata::have_side_effect(pcodeop *op, varnode *pos)
 
     if (!fd) return false;
 
+    dobc *d = fd->d;
+
+#if 0
     if (fd->name == "memcpy") {
-        varnode *in0 = op->callctx->r0;
-        varnode *in2 = op->callctx->r2;
+        varnode *in0 = op->get_in(d->r0_addr);
+        varnode *in2 = op->get_in(d->r2_addr);
 
         //printf("op.id = %d, is_rel_const=%d, val.0=%lld, val.2=%lld, pos.val = %lld\n", op->start.getTime(), in0->is_rel_constant(), in0->get_val(), in2->get_val(), pos->get_val());
         if (in0->is_rel_constant() && in2->is_constant()) {
@@ -6370,8 +7348,8 @@ bool        funcdata::have_side_effect(pcodeop *op, varnode *pos)
         }
     }
     else if (fd->name == "dec_str") {
-        varnode *in0 = op->callctx->r0;
-        varnode *in2 = op->callctx->r1;
+        varnode *in0 = op->get_in(d->r0_addr);
+        varnode *in2 = op->get_in(d->r1_addr);
 
         //printf("op.id = %d, is_rel_const=%d, val.0=%lld, val.2=%lld, pos.val = %lld\n", op->start.getTime(), in0->is_rel_constant(), in0->get_val(), in2->get_val(), pos->get_val());
         if (in0->is_rel_constant() && in2->is_constant()) {
@@ -6388,8 +7366,16 @@ bool        funcdata::have_side_effect(pcodeop *op, varnode *pos)
             }
         }
     }
+#endif
 
+#if 1
+    if (in_safezone(pos->get_val(), pos->size) && !d->test_cond_inline(d, op->get_call_offset()))
+        return false;
+
+    return true;
+#else
     return fd->have_side_effect();
+#endif
 }
 
 flowblock*  funcdata::dowhile2ifwhile(vector<flowblock *> &dowhile)
@@ -6523,7 +7509,7 @@ flowblock*  funcdata::clone_ifweb(flowblock *newstart, flowblock *start, flowblo
         for (j = 0; j < webs[i]->out.size(); j++) {
             out = webs[i]->get_out(j);
 
-            bblocks.add_edge(webs[i]->copymap, out->copymap, webs[i]->out[j].label);
+            bblocks.add_edge(webs[i]->copymap, (out == end) ? out:out->copymap, webs[i]->out[j].label);
         }
     }
 
@@ -6585,6 +7571,48 @@ flowblock*  funcdata::clone_web(flowblock *start, flowblock *end, vector<flowblo
     }
 
     return b;
+}
+
+flowblock *funcdata::inline_call(pcodeop *callop, funcdata *fd)
+{
+	flowblock *start = callop->parent;
+	flowblock *tailb = split_block(start, callop->basiciter);
+	flowblock *b, *old, *out;
+	int i, j;
+
+	while (start->out.size() > 0) {
+		out = start->get_out(0);
+		int lab = bblocks.remove_edge(start, out);
+		bblocks.add_edge(tailb, out, lab);
+	}
+
+	for (i = 0; i < fd->bblocks.get_size(); i++) {
+		old = fd->bblocks.get_block(i);
+		b = clone_block(old, F_OMIT_RETURN);
+		old->copymap = b;
+	}
+	
+	for (i = 0; i < fd->bblocks.get_size(); i++) {
+		old = fd->bblocks.get_block(i);
+		for (j = 0; j < old->out.size(); j++) {
+			blockedge *e = &old->out[j];
+			bblocks.add_edge(old->copymap, e->point->copymap, e->label & a_true_edge);
+		}
+	}
+
+	for (i = 0; i < fd->bblocks.exitlist.size(); i++) {
+		old = fd->bblocks.exitlist[i];
+		if (old->get_return_addr() == (callop->get_dis_addr() + 4))
+			bblocks.add_edge(old->copymap, tailb);
+	}
+	bblocks.add_edge(start, fd->bblocks.get_block(0)->copymap);
+
+	for (i = 0; i < fd->bblocks.get_size(); i++) {
+		old = fd->bblocks.get_block(i);
+		old->copymap = NULL;
+	}
+
+	return start;
 }
 
 func_call_specs::func_call_specs(pcodeop *o, funcdata *f)
